@@ -1,0 +1,5 @@
+dependencies {
+    // https://mvnrepository.com/artifact/org.scala-lang/scala-reflect
+    compile group: 'org.scala-lang', name: 'scala-reflect', version: '2.13.4'
+
+}

@@ -1,0 +1,3 @@
+rootProject.name = 'code_generation'
+include 'macros'
+
