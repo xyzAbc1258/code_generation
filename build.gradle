@@ -15,7 +15,8 @@ allprojects {
 
     tasks.withType(ScalaCompile) {
         scalaCompileOptions.additionalParameters = [
-                "-Ymacro-annotations", "-Ymacro-debug-lite", "-Xlog-implicits", "-Yshow-trees-stringified"]
+                "-Ymacro-annotations", "-Ymacro-debug-lite","-Xlog-implicits", "-Yshow-trees-stringified"
+        ]
     }
 
     group 'org.example'

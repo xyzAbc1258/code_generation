@@ -17,4 +17,8 @@ object HListUtils {
     s.asInstanceOf[Selector[HList, Int]](l)
   }
 
+  def toHList(l: List[Any]): HList = {
+    l.foldRight[HList](HNil)(_ :: _)
+  }
+
 }
