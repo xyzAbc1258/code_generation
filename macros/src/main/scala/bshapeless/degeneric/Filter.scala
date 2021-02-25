@@ -1,10 +1,9 @@
 package bshapeless.degeneric
 
-import bshapeless.CommonTypes
+import bshapeless.CommonUtils
 import shapeless.HList
 
 import scala.reflect.macros.whitebox
-
 import scala.language.experimental.macros
 
 trait Filter[H <: HList, TFs <: HList, T] {
@@ -16,12 +15,12 @@ object Filter {
 
   implicit def mkInstance[H1 <: HList, TFs <: HList, T]: Filter[H1,TFs, T] = macro Macro.make[H1,TFs, T]
 
-  class Macro(val c: whitebox.Context) extends CommonTypes {
+  class Macro(val c: whitebox.Context) extends CommonUtils {
     import c.universe._
 
     def make[H1 <: HList : c.WeakTypeTag, TFs <: HList : c.WeakTypeTag, T: c.WeakTypeTag]: c.Tree = {
-      val h1Types = split2ArgsRec(weakTypeOf[H1], Types.hconsType)
-      val h2Types = split2ArgsRec(weakTypeOf[TFs], Types.hconsType)
+      val h1Types = Types.split2ArgsRec(weakTypeOf[H1], Types.hconsType)
+      val h2Types = Types.split2ArgsRec(weakTypeOf[TFs], Types.hconsType)
       if(h1Types.size != h2Types.size)
         sys.error(s"Same size ${h1Types.size} ${h2Types.size}")
       val t = weakTypeOf[T]
@@ -46,7 +45,5 @@ object Filter {
        }
        }"""
     }
-
-    override val exprCreate: ExprCreator = null
   }
 }

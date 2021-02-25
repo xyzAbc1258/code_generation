@@ -1,11 +1,11 @@
 package bshapeless.degeneric
 
-import bshapeless.CommonTypes
+import bshapeless.CommonUtils
 import shapeless._
 
 import scala.collection.immutable
-import scala.reflect.macros.whitebox
 import scala.language.experimental.macros
+import scala.reflect.macros.whitebox
 
 trait Fold {
   type Constraint
@@ -47,12 +47,12 @@ object DegenericSquare {
 
   implicit def mkInstance[H1 <: HList, H2 <: HList, F[_,_], Folder <: Fold]: DegenericSquare[H1,H2,F, Folder] = macro Macro.make[H1,H2,F, Folder]
 
-  class Macro(val c: whitebox.Context) extends CommonTypes {
+  class Macro(val c: whitebox.Context) extends CommonUtils {
     import c.universe._
 
     def make[H1 <: HList : c.WeakTypeTag, H2 <: HList : c.WeakTypeTag, F[_,_], Folder <: Fold: c.WeakTypeTag](implicit ft: c.WeakTypeTag[F[_,_]]): c.Tree = {
-      val h1Types = split2ArgsRec(weakTypeOf[H1], Types.hconsType)
-      val h2Types = split2ArgsRec(weakTypeOf[H2], Types.hconsType)
+      val h1Types = Types.split2ArgsRec(weakTypeOf[H1], Types.hconsType)
+      val h2Types = Types.split2ArgsRec(weakTypeOf[H2], Types.hconsType)
       val connector = weakTypeOf[F[_,_]].typeConstructor
       val finalTypes = for(t1 <- h1Types; t2 <- h2Types) yield appliedType(connector, t1, t2)
       def collectType(name: String): Type = weakTypeOf[Folder].dealias.members
@@ -77,6 +77,5 @@ object DegenericSquare {
        }"""
     }
 
-    override val exprCreate: ExprCreator = null
   }
 }

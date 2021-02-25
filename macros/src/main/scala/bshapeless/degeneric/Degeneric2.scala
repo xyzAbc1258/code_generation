@@ -1,11 +1,10 @@
 package bshapeless.degeneric
 
-import bshapeless.CommonTypes
+import bshapeless.CommonUtils
 import shapeless.HList
 
 import scala.collection.immutable
 import scala.reflect.macros.whitebox
-
 import scala.language.experimental.macros
 
 trait Degeneric2[H1 <: HList, H2 <: HList, F[_, _], Folder <: Fold] {
@@ -17,13 +16,13 @@ object Degeneric2 {
 
   implicit def mkInstance[H1 <: HList, H2 <: HList, F[_, _], Folder <: Fold]: Degeneric2[H1, H2, F, Folder] = macro Macro.make[H1, H2, F, Folder]
 
-  class Macro(val c: whitebox.Context) extends CommonTypes {
+  class Macro(val c: whitebox.Context) extends CommonUtils {
 
     import c.universe._
 
     def make[H1 <: HList : c.WeakTypeTag, H2 <: HList : c.WeakTypeTag, F[_, _], Folder <: Fold : c.WeakTypeTag](implicit ft: c.WeakTypeTag[F[_, _]]): c.Tree = {
-      val h1Types = split2ArgsRec(weakTypeOf[H1], Types.hconsType)
-      val h2Types = split2ArgsRec(weakTypeOf[H2], Types.hconsType)
+      val h1Types = Types.split2ArgsRec(weakTypeOf[H1], Types.hconsType)
+      val h2Types = Types.split2ArgsRec(weakTypeOf[H2], Types.hconsType)
       if (h1Types.size != h2Types.size)
         sys.error(s"List of types must have same size. Got: ${h1Types.size} and ${h2Types.size}")
       val connector = weakTypeOf[F[_, _]].typeConstructor
@@ -78,7 +77,6 @@ object Degeneric2 {
        }"""
     }
 
-    override val exprCreate: ExprCreator = null
   }
 
 }
