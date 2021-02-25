@@ -1,8 +1,8 @@
 package org.example.code_generation.proc
 
-import bshapeless.{MGenerator, NamedStruct}
-import org.example.code_generation.examples5.Generator.{Mode, NoRepeatAppFunction, NoSubtyping, OnlyOne, OnlyOneNoRepeat}
-import org.example.code_generation.examples5.{Degeneric2, Expr, Generator, Reachable}
+import bshapeless.MGenerator
+import bshapeless.Options
+import org.example.code_generation.examples5.Degeneric2
 import org.example.code_generation.proc.Semantics.Tag
 import shapeless._
 
@@ -55,11 +55,13 @@ object Simulator {
       override def from(r: Repr): Command = Coproduct.unsafeGet(r).asInstanceOf[Command]
     }
 
-    val es2 = MGenerator[
+    val es2 = MGenerator.applyL[
+      Nat._1,
       Nat._5,
       Ctx,
       gen.Repr,
-      ExecutorState => (ExecutorState with Result)
+      ExecutorState => (ExecutorState with Result),
+      Options
     ]
     /*
         for (e <- Set(es2.expressions:_*).toList.sortBy(_.size).headOption) {
@@ -92,30 +94,30 @@ object Simulator {
 
     val ctxValue: Ctx =
       (((x: MemoryState) => (y: (Int with Result, Int with RegDst)) => x.withReg(y._2, y._1).tag[Result]) ::
-      ((x: MemoryState) => (y: (Int with Result, Int with MemDst)) => x.withMemory(y._2, y._1).tag[Result]) ::
-      ((x: MemoryState) => (y: Int with MemSrc) => x.getMemory(y).tag) ::
-      ((x: MemoryState) => (y: Int with RegSrc) => x.getReg(y).tag) ::
-      ((_: Load).memoryLocation) ::
-      ((_: Load).register) ::
-      ((_: Store).register) ::
-      ((_: Store).memoryLocation) ::
-      ((_: MoveReg).regSrc) ::
-      ((_: MoveReg).regDest) ::
-      ((_: LoadConst).value) ::
-      ((_: LoadConst).register) ::
-      ((_: OpCommand).op) ::
-      ((_: OpCommand).r1Ext) ::
-      ((_: OpCommand).r2Ext) ::
-      ((x: IntOp) => (v: (Int with Operand1, Int with Operand2)) => x.execute(v._1, v._2)) ::
-      ((_: Jmp).line.tag[LineNumber]) ::
-      ((x: ExecutorState) => (j: JmpIf) =>
-        if (j.which.isOkay(x.memoryState.getReg(j.reg)))
-          x.jumpTo(j.lineNumber).tag[Result]
-        else x.nextWithState(x.memoryState).tag[Result]) ::
-      ((_: ExecutorState).memoryState) ::
-      ((x: ExecutorState) => (ns: MemoryState with Result) => x.nextWithState(ns).tag[Result]) ::
-      ((x: ExecutorState) => (ln: Int with LineNumber) => x.jumpTo(ln).tag[Result]) ::
-      HNil).asInstanceOf[Ctx]
+        ((x: MemoryState) => (y: (Int with Result, Int with MemDst)) => x.withMemory(y._2, y._1).tag[Result]) ::
+        ((x: MemoryState) => (y: Int with MemSrc) => x.getMemory(y).tag) ::
+        ((x: MemoryState) => (y: Int with RegSrc) => x.getReg(y).tag) ::
+        ((_: Load).memoryLocation) ::
+        ((_: Load).register) ::
+        ((_: Store).register) ::
+        ((_: Store).memoryLocation) ::
+        ((_: MoveReg).regSrc) ::
+        ((_: MoveReg).regDest) ::
+        ((_: LoadConst).value) ::
+        ((_: LoadConst).register) ::
+        ((_: OpCommand).op) ::
+        ((_: OpCommand).r1Ext) ::
+        ((_: OpCommand).r2Ext) ::
+        ((x: IntOp) => (v: (Int with Operand1, Int with Operand2)) => x.execute(v._1, v._2)) ::
+        ((_: Jmp).line.tag[LineNumber]) ::
+        ((x: ExecutorState) => (j: JmpIf) =>
+          if (j.which.isOkay(x.memoryState.getReg(j.reg)))
+            x.jumpTo(j.lineNumber).tag[Result]
+          else x.nextWithState(x.memoryState).tag[Result]) ::
+        ((_: ExecutorState).memoryState) ::
+        ((x: ExecutorState) => (ns: MemoryState with Result) => x.nextWithState(ns).tag[Result]) ::
+        ((x: ExecutorState) => (ln: Int with LineNumber) => x.jumpTo(ln).tag[Result]) ::
+        HNil).asInstanceOf[Ctx]
 
 
     val first = es2.expressions.minBy(_.size)
@@ -134,7 +136,7 @@ object Simulator {
 
   def main(args: Array[String]): Unit = {
     val inp = inputSet()
-    val state = ExecutorState.empty(inp.toArray,8)
+    val state = ExecutorState.empty(inp.toArray, 8)
     val r = gen.apply(state)
     println(s"Result memory: ${r.memoryState}")
     println(s"Result: ${r.memoryState.getReg(0)}")

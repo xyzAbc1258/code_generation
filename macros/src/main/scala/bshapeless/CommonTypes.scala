@@ -1,16 +1,35 @@
 package bshapeless
 
-import shapeless._
+import shapeless.HList
+import shapeless.Coproduct
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.annotation.tailrec
+import scala.collection.mutable
 import scala.reflect.macros.blackbox
 
-trait CommonTypes {
+trait CommonTypes extends GeneratorTypes {
 
   val c: blackbox.Context
 
   import c.universe._
+
+  object Timer {
+
+    private val m: mutable.Map[String, Long] = mutable.Map.empty
+
+    def timer[T](key: String)(f: => T): T = {
+      val s = System.nanoTime()
+      val r = f
+      val t = System.nanoTime() - s
+      m.updateWith(key)(_.map(_ + t).orElse(Some(t)))
+      r
+    }
+
+    def resultsInMillis: Map[String, Long] = m.view.mapValues(_ / 1000).toMap
+
+    def printable: String = "Timer:\n" + (resultsInMillis.map(s => s"${s._1} - ${s._2}ms").mkString("\n"))
+  }
 
   object Func1Extractor {
     @inline def isFunc1(t: Type): Boolean = {
@@ -27,71 +46,54 @@ trait CommonTypes {
   }
 
   object Types {
-    val hnilType: Type = weakTypeOf[HNil]
-    val cnilType: Type = weakTypeOf[CNil]
+    val hnilType: Type = weakTypeOf[shapeless.HNil]
+    val cnilType: Type = weakTypeOf[shapeless.CNil]
     val hconsType: Type = weakTypeOf[shapeless.::[_, _]]
-    val cconsType: Type = weakTypeOf[:+:[_, _]]
+    val cconsType: Type = weakTypeOf[shapeless.:+:[_, _]]
     val funcType: Type = weakTypeOf[(_) => _]
 
     val varType: Type = weakTypeOf[Var]
   }
 
-  trait Appliable[T] {
-    def apply(tycon: T, args: T*): T
-
-    def applyType(tycon: Type, args: T*): T
-
-    def isSubType(t: T, expected: Type): Boolean
-  }
-
-
-  object Appliable {
-
-    def apply[T](implicit e: Appliable[T]): Appliable[T] = e
-
-    implicit val ApplicableType: Appliable[c.universe.Type] = new Appliable[Type] {
-      override def apply(tycon: c.universe.Type, args: c.universe.Type*): c.universe.Type = {
-        appliedType(tycon, args.toList)
-      }
-
-      override def applyType(tycon: c.universe.Type, args: c.universe.Type*): c.universe.Type =
-        apply(tycon, args: _*)
-
-      override def isSubType(t: c.universe.Type, expected: c.universe.Type): Boolean =
-        t <:< expected
+  implicit class CommonTypeBuilder(a2: Type) {
+    private def apply(tycon: c.universe.Type, args: c.universe.Type*): c.universe.Type = {
+      appliedType(tycon, args.toList)
     }
-  }
 
-  implicit class TypeOps(a: Type) {
+    private def applyType(tycon: c.universe.Type, args: c.universe.Type*): c.universe.Type =
+      apply(tycon, args: _*)
+
+    private def isSubType(t: c.universe.Type, expected: c.universe.Type): Boolean =
+      t <:< expected
+
+    def ::::(a1: Type): Type = { //Methods ending with colon bind to right eg. t1 :::: t2 == t2.::::(t1)
+      assert(isSubType(a2, weakTypeOf[HList]), a2)
+      applyType(Types.hconsType.typeConstructor, a1, a2)
+    }
+
+    def +:+:(a1: Type): Type = {
+      assert(isSubType(a2, weakTypeOf[Coproduct]))
+      applyType(Types.cconsType.typeConstructor, a1, a2)
+    }
+
+    def ==>(a1: Type): Type = applyType(Types.funcType.typeConstructor, a2, a1)
+
     def collect: Set[Type] = {
       val c = scala.collection.mutable.ListBuffer.empty[Type]
-      a.foreach(c.append(_))
+      a2.foreach(c.append)
       c.toSet
     }
   }
 
-  implicit class CommonTypeBuilder[T: Appliable](a2: T) {
-    def ::::(a1: T): T = { //Methods ending with colon bind to right eg. t1 :::: t2 == t2.::::(t1)
-      assert(Appliable[T].isSubType(a2, weakTypeOf[HList]), a2)
-      Appliable[T].applyType(Types.hconsType.typeConstructor, a1, a2)
-    }
 
-    def +:+:(a1: T): T = {
-      assert(Appliable[T].isSubType(a2, weakTypeOf[Coproduct]))
-      Appliable[T].applyType(Types.cconsType.typeConstructor, a1, a2)
-    }
-
-    def ==>(a1: T): T =
-      Appliable[T].applyType(Types.funcType.typeConstructor, a2, a1)
-  }
-
-
-  case class Candidate private(tree: Tree, size: Int, no: Int, dependencies: Seq[Candidate], ec: GenCtxTpeProvider) {
+  case class Candidate private(tree: Tree, no: Int, dependencies: Seq[Candidate], structure: StructureTree, ec: GenCtxTpeProvider) {
     def term: Tree = q"$termName"
+
+    val size: Int = dependencies.map(_.size).sum + 1
 
     def tpt: Tree = TypeTree(
       appliedType(
-        weakTypeOf[bshapeless.exprs.Expr[_,_,_]].typeConstructor,
+        weakTypeOf[bshapeless.exprs.Expr[_, _, _]].typeConstructor,
         ec.ctxType,
         ec.argType,
         ec.resType
@@ -106,27 +108,44 @@ trait CommonTypes {
 
     def allDepesWithItself = allDependencies + this
 
-    override def hashCode(): Int = no // no is unique by construction
+    override def hashCode(): Int = no
 
-    override def equals(o: Any): Boolean = o match {
-      case o: Candidate => no == o.no
-      case _ => false
-    }
+    override def equals(o: Any): Boolean = o.isInstanceOf[Candidate] && (this eq o.asInstanceOf[Candidate])
 
   }
 
   object Candidate {
 
+    class TypeTriple(val provider: GenCtxTpeProvider, val structureTree: StructureTree) {
+      override def equals(o: Any): Boolean = o match {
+        case tt: TypeTriple =>
+          provider.resType =:= tt.provider.resType &&
+          provider.ctxType =:= tt.provider.ctxType &&
+          provider.argType =:= tt.provider.argType &&
+            structureTree == tt.structureTree
+      }
+
+      override def hashCode(): Int = provider.resType.typeSymbol.name.decodedName.toString.hashCode
+    }
+
     private val _counter: AtomicInteger = new AtomicInteger(0)
 
     private def next: Int = _counter.getAndIncrement()
 
-    def apply(tree: Tree, dependencies: Candidate*)(implicit ec: GenCtxTpeProvider) =
-      new Candidate(tree, dependencies.map(_.size).sum + 1 , next, dependencies, ec)
+    private val m: scala.collection.mutable.Map[TypeTriple, Candidate] =
+      scala.collection.mutable.Map.empty
+
+    def apply(tree: Tree, structTree: StructureTree, dependencies: Candidate*)(implicit ec: GenCtxTpeProvider): Candidate = {
+      Timer.timer("Candidate creator") {
+        m.getOrElseUpdate(new TypeTriple(ec, structTree), new Candidate(tree, next, dependencies, structTree, ec))
+      }
+    }
+
   }
 
   implicit val liftCandidate: Liftable[Candidate] = (c: Candidate) => c.term
 
+  implicit def toStructureTree(c: Candidate): StructureTree = c.structure
 
   sealed trait Args {
     def wholeTypeTree: Tree = TypeTree(wholeType)
@@ -214,42 +233,59 @@ trait CommonTypes {
       }
     }
 
-    override def resultFits(expected: c.universe.Type): Option[Func] = Some(this).filter(x => result <:< expected)
+    override def resultFits(expected: c.universe.Type): Option[Func] = Some(this).filter(_ => result <:< expected)
   }
 
 
-    case class GenericFunction(wholeType: Type, symbols: List[Type], func: Type, idx: Int, subIndex: Int) extends Func {
+  case class GenericFunction(wholeType: Type, symbols: List[Type], func: Type, idx: Int, subIndex: Int) extends Func {
 
-      val genType = typeToFunc(func, idx, subIndex, true).head
+    val genType = typeToFunc(func, idx, subIndex, true).head
 
-      override def apply(funcTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate = ???
+    override def apply(funcTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate = ???
 
-      override def args: Seq[c.universe.Type] = ???
+    override def args: Seq[c.universe.Type] = ???
 
-      override def result: c.universe.Type = ???
+    override def result: c.universe.Type = ???
 
-      override def withIndex(n: Int): Func = copy(idx = n)
+    override def withIndex(n: Int): Func = copy(idx = n)
 
-      override def resultFits(expected: c.universe.Type): Option[Func] = {
-        @tailrec
-        def compareSingle(s: Type, pt: Type, e: Type): Type = {
-          c.info(c.enclosingPosition, s"Attempt to unify: $pt and $e", true)
-          if(pt.typeArgs.nonEmpty && e.typeArgs.nonEmpty) {
-            if(pt.typeConstructor =:= e.typeConstructor) {
-              val ptArgsInd = pt.typeArgs.indexWhere(_.contains(s.typeSymbol))
-              compareSingle(s, pt.typeArgs(ptArgsInd).dealias, e.typeArgs(ptArgsInd).dealias)
+    override def resultFits(expected: c.universe.Type): Option[Func] = {
+      @tailrec
+      def compareSingle(s: Type, pt: Type, e: Type): Option[Type] = {
+        //c.info(c.enclosingPosition, s"Attempt to unify: $pt and $e", true)
+        if (pt.typeArgs.nonEmpty && e.typeArgs.nonEmpty) {
+          if (pt.typeConstructor =:= e.typeConstructor) {
+            (pt.typeArgs, e.typeArgs) match {
+              case (a :: Nil, b :: Nil) => compareSingle(s, a, b)
+              case (a1 :: a2 :: Nil, b1 :: b2 :: Nil) =>
+                if(a1.contains(s.typeSymbol)) compareSingle(s, a1, b1)
+                else compareSingle(s, a2, b2)
+              case (a1 :: a2 :: a3 :: Nil, b1 :: b2 :: b3 :: Nil) =>
+                if(a1.contains(s.typeSymbol)) compareSingle(s, a1, b1)
+                else if(a2.contains(s.typeSymbol)) compareSingle(s, a2, b2)
+                else compareSingle(s, a3, b3)
+              case (pta, ea) =>
+                pta.zip(ea).find(_._1.contains(s.typeSymbol)) match {
+                  case Some((pp, ep)) => compareSingle(s, pp, ep)
+                  case None =>None
+                }
             }
-            else e
-          } else e
-        }
-        val cand = symbols.map(x => compareSingle(x, genType.result, expected.dealias))
-        val pairs = symbols zip cand
-        val tt = func.map(x => pairs.find(_._1 =:= x).map(_._2).getOrElse(x))
-        val gf = typeToFunc(tt, idx).head
-        c.info(c.enclosingPosition, s"Generic candidate. cands: $cand exp: $expected, got:  $tt", true)
-        Some(gf).filter(_.result <:< expected)
+          }
+          else None
+        } else if (pt <:< s)
+          Some(e)
+        else None
       }
+
+      val cand = symbols.map(x => compareSingle(x, genType.result, expected.dealias))
+      if (cand.exists(_.isEmpty)) return None
+      val pairs = symbols zip cand.map(_.get)
+      val tt = func.map(x => pairs.find(_._1 =:= x).map(_._2).getOrElse(x))
+      val gf = typeToFunc(tt, idx).head
+      //c.info(c.enclosingPosition, s"Generic candidate. cands: $cand exp: $expected, got:  $tt", true)
+      Some(gf).filter(_.result <:< expected)
     }
+  }
 
   def typeToFunc(t: Type, idx: Int, subIndex: Int = 0, disableGeneric: Boolean = false): List[Func] = {
     t.dealias match {
@@ -278,10 +314,10 @@ trait CommonTypes {
     else SingleArg(a)
   }
 
-  def toInt[L <: Nat : c.WeakTypeTag]: Int = {
+  def toInt[L <: shapeless.Nat : c.WeakTypeTag]: Int = {
     var t = weakTypeOf[L].dealias
     var i = 0
-    while (t <:< weakTypeOf[Succ[_]]) {
+    while (t <:< weakTypeOf[shapeless.Succ[_]]) {
       t = t.typeArgs.head.dealias
       i += 1
     }
@@ -294,7 +330,7 @@ trait CommonTypes {
   }
 
 
-  def createContext[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag,
+  def createContext[L <: shapeless.Nat : c.WeakTypeTag, N <: shapeless.Nat : c.WeakTypeTag,
     C <: HList : c.WeakTypeTag,
     A: c.WeakTypeTag,
     T: c.WeakTypeTag,
@@ -316,6 +352,8 @@ trait CommonTypes {
         case _ => false
       }
     }
+
+    override def hashCode(): Int = 0
   }
 
   implicit def wrap(t: Type): TypeEqualityWrapper = TypeEqualityWrapper(t)
@@ -326,12 +364,14 @@ trait CommonTypes {
     noLoops: Boolean
   )
 
-  def toOpts[O <: Options: c.WeakTypeTag]: Opts =
+  def toOpts[O <: Options : c.WeakTypeTag]: Opts =
     Opts(weakTypeOf[O] <:< weakTypeOf[NoLoops])
 
   trait GenCtxTpeProvider {
     def ctxType: Type
+
     def argType: Type
+
     def resType: Type
   }
 
@@ -339,7 +379,9 @@ trait CommonTypes {
 
     case class CustomGenCtxTpeProvider(ctxType: Type, argType: Type, resType: Type) extends GenCtxTpeProvider {
       def withCtx(ctx: Type): CustomGenCtxTpeProvider = copy(ctxType = ctx)
+
       def withArg(arg: Type): CustomGenCtxTpeProvider = copy(argType = arg)
+
       def withRes(res: Type): CustomGenCtxTpeProvider = copy(resType = res)
     }
 
@@ -396,6 +438,5 @@ trait CommonTypes {
 
     def provider: GenCtxTpeProvider.CustomGenCtxTpeProvider = GenCtxTpeProvider.derive(this)
   }
-
 
 }

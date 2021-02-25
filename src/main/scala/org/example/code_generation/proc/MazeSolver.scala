@@ -198,7 +198,7 @@ object MazeSolver {
     }*/
 
     val res2 = MGenerator.applyL[
-    Nat._1,
+    Nat._5,
     Succ[Succ[Succ[Succ[Succ[Succ[Nat._22]]]]]],
     Directions1,
     M2.filtered9.Out,
