@@ -14,6 +14,10 @@ class TimerCollector {
     r
   }
 
+  def tick(key: String, value: Int = 1000): Unit = {
+    m.updateWith(key)(_.map(_ + value) orElse Some(value))
+  }
+
   def resultsInMillis: Map[String, Long] = m.view.mapValues(_ / 1000).toMap
 
   def printable: String = "Timer:\n" + (resultsInMillis.map(s => s"${s._1} - ${s._2}ms").mkString("\n"))
