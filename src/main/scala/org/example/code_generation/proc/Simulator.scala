@@ -1,6 +1,8 @@
 package org.example.code_generation.proc
 
 import bshapeless.MGenerator
+import bshapeless.NoLoops
+import bshapeless.ObjectFuncProvider
 import bshapeless.Options
 import org.example.code_generation.examples5.Degeneric2
 import org.example.code_generation.proc.Semantics.Tag
@@ -19,23 +21,17 @@ object Simulator {
       (MemoryState => ((Int with Result, Int with MemDst)) => (MemoryState with Result)) ::
       (MemoryState => (Int with MemSrc) => (Int with Result)) ::
       rrType.Out ::
-      (Load => (Int with MemSrc)) ::
-      (Load => (Int with RegDst)) ::
-      (Store => (Int with RegSrc)) ::
-      (Store => (Int with MemDst)) ::
-      (MoveReg => (Int with RegSrc)) ::
-      (MoveReg => (Int with RegDst)) ::
-      (LoadConst => (Int with Result)) ::
-      (LoadConst => (Int with RegDst)) ::
-      (OpCommand => IntOp) ::
-      (OpCommand => (Int with RegOp1 with RegDst)) ::
-      (OpCommand => (Int with RegOp2)) ::
-      (IntOp => ((Int with Operand1, Int with Operand2)) => Int with Result) ::
-      (Jmp => (Int with LineNumber)) ::
-      (ExecutorState => JmpIf => (ExecutorState with Result)) ::
-      (ExecutorState => MemoryState) ::
-      (ExecutorState => (MemoryState with Result) => (ExecutorState with Result)) ::
-      (ExecutorState => (Int with LineNumber) => (ExecutorState with Result)) ::
+      ObjectFuncProvider[Load] ::
+      ObjectFuncProvider[Store] ::
+      ObjectFuncProvider[MoveReg] ::
+      ObjectFuncProvider[LoadConst] ::
+      ObjectFuncProvider[OpCommandAbs] ::
+      ObjectFuncProvider[IntOp] ::
+      ObjectFuncProvider[Jmp] ::
+      ObjectFuncProvider[JmpIf] ::
+      ObjectFuncProvider[CmpWhich] ::
+      (ExecutorState => (Int with LineNumber) => (Boolean with Result) => (ExecutorState with Result)) ::
+      ObjectFuncProvider[ExecutorApi] ::
       HNil
 
 
@@ -56,67 +52,49 @@ object Simulator {
     }
 
     val es2 = MGenerator.applyL[
-      Nat._1,
+      Nat._5,
       Nat._5,
       Ctx,
       gen.Repr,
       ExecutorState => (ExecutorState with Result),
-      Options
+      NoLoops
     ]
-    /*
-        for (e <- Set(es2.expressions:_*).toList.sortBy(_.size).headOption) {
-          println(e.stringify(
-            "storeReg" ::
-              "storeMem" ::
-              "getMem" ::
-              "getReg" ::
-              "load_memSrc" ::
-              "load_regDst" ::
-              "store_regSrc" ::
-              "store_memDst" ::
-              "move_regSrc" ::
-              "move_regDst" ::
-              "load_value" ::
-              "load_regDst" ::
-              "op_intOp" ::
-              "op_operand1_and_regDst" ::
-              "op_operand2" ::
-              "apply_op" ::
-              "jmp_line_number" ::
-              "conditional_jmp" ::
-              "get_state" ::
-              "next_line_with_state" ::
-              "jump_to" ::
-              HNil,
-            "command"
-          ))
-        }*/
+
+    for (e <- Set(es2.expressions: _*).toList.sortBy(_.size)) {
+      println(e.stringify(
+        "storeReg" ::
+          "storeMem" ::
+          "getMem" ::
+          "getReg" ::
+          "" :: "" :: "" :: "" :: "" ::
+          "" ::
+          "" :: "" :: "" ::
+          "conditional_jmp" ::
+          "" ::
+          HNil,
+        "command"
+      ))
+    }
 
     val ctxValue: Ctx =
       (((x: MemoryState) => (y: (Int with Result, Int with RegDst)) => x.withReg(y._2, y._1).tag[Result]) ::
         ((x: MemoryState) => (y: (Int with Result, Int with MemDst)) => x.withMemory(y._2, y._1).tag[Result]) ::
         ((x: MemoryState) => (y: Int with MemSrc) => x.getMemory(y).tag) ::
         ((x: MemoryState) => (y: Int with RegSrc) => x.getReg(y).tag) ::
-        ((_: Load).memoryLocation) ::
-        ((_: Load).register) ::
-        ((_: Store).register) ::
-        ((_: Store).memoryLocation) ::
-        ((_: MoveReg).regSrc) ::
-        ((_: MoveReg).regDest) ::
-        ((_: LoadConst).value) ::
-        ((_: LoadConst).register) ::
-        ((_: OpCommand).op) ::
-        ((_: OpCommand).r1Ext) ::
-        ((_: OpCommand).r2Ext) ::
-        ((x: IntOp) => (v: (Int with Operand1, Int with Operand2)) => x.execute(v._1, v._2)) ::
-        ((_: Jmp).line.tag[LineNumber]) ::
-        ((x: ExecutorState) => (j: JmpIf) =>
-          if (j.which.isOkay(x.memoryState.getReg(j.reg)))
-            x.jumpTo(j.lineNumber).tag[Result]
-          else x.nextWithState(x.memoryState).tag[Result]) ::
-        ((_: ExecutorState).memoryState) ::
-        ((x: ExecutorState) => (ns: MemoryState with Result) => x.nextWithState(ns).tag[Result]) ::
-        ((x: ExecutorState) => (ln: Int with LineNumber) => x.jumpTo(ln).tag[Result]) ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ObjectFuncProvider ::
+        ((x: ExecutorState) => (line: Int with LineNumber) => (jump: Boolean with Result) =>
+          if (jump) x.jumpTo(line).tag[Result]
+          else x.nextWithStateI(x.memoryState).tag[Result]
+          ) ::
+        ObjectFuncProvider ::
         HNil).asInstanceOf[Ctx]
 
 

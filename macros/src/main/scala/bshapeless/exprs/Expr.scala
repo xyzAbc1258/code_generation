@@ -190,12 +190,16 @@ case class Apply[Ctx <: HList, A, Arg, Res](
 case class ApplyNative[Ctx <: HList, A, Arg, Res](
   e: Expr[Ctx, A, Arg])(
   f: Arg => Res,
-  name: String
+  name: String,
+  memberFunc: Boolean = false
 ) extends Expr[Ctx, A, Res] {
   override def apply(v1: Ctx, v2: A): Res = f(e(v1, v2))
 
   override protected def innerStringify[C1, A1](h: C1, a: A1)(implicit e1: Aux[Ctx, String, C1], e2: Aux[A, String, A1]): String = {
-    s"$name(${e.stringify(h, a)})"
+    if(!memberFunc)
+      s"$name(${e.stringify(h, a)})"
+    else
+      s"${e.stringify(h, a)}.$name"
   }
 
   override def size: Int = e.size + 1

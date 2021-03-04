@@ -20,5 +20,5 @@ class TimerCollector {
 
   def resultsInMillis: Map[String, Long] = m.view.mapValues(_ / 1000).toMap
 
-  def printable: String = "Timer:\n" + (resultsInMillis.map(s => s"${s._1} - ${s._2}ms").mkString("\n"))
+  def printable: String = "Timer:\n" + (resultsInMillis.map(s => s"${s._1} - ${s._2}μs").mkString("\n"))
 }

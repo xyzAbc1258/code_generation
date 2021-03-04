@@ -149,10 +149,10 @@ object MazeSolver {
   type _29 = S[_28]
   type _30 = S[_29]
 
-  type Down[CN , RN ] = ((P[RN, CN], P[S[RN], CN])) => PT[RN, CN] => PT[S[RN ], CN]
-  type Up[CN , RN ] = ((P[S[RN ], CN], P[RN, CN])) => PT[S[RN ], CN] => PT[RN, CN]
-  type Left[CN , RN ] = ((P[RN, S[CN ]], P[RN, CN])) => PT[RN, S[CN ]] => PT[RN, CN]
-  type Right[CN , RN ] = ((P[RN, CN], P[RN, S[CN ]])) => PT[RN, CN] => PT[RN, S[CN ]]
+  type Down[CN , RN] = P[S[RN], CN] => PT[RN, CN] => PT[S[RN], CN]
+  type Up[CN , RN] = P[RN, CN] => PT[S[RN], CN] => PT[RN, CN]
+  type Left[CN , RN] = P[RN, CN] => PT[RN, S[CN ]] => PT[RN, CN]
+  type Right[CN , RN] = P[RN, S[CN]] => PT[RN, CN] => PT[RN, S[CN]]
 
   type L5 = _4 :: _3 :: _2 :: _1 :: _0 :: HNil
   type L9 = _8 :: _7 :: _6 :: _5 :: L5

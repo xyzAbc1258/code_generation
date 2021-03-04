@@ -9,6 +9,8 @@ trait CommonUtils {
   def log(msg: String, force: Boolean = true): Unit = c.info(c.enclosingPosition, msg, force = force)
 
   object Types {
+    val objectProviderTpe: Type = weakTypeOf[ObjectFuncProvider[_]]
+
     val hlistType: Type = weakTypeOf[shapeless.HList]
     val hnilType: Type = weakTypeOf[shapeless.HNil]
     val hconsType: Type = weakTypeOf[shapeless.::[_, _]]
@@ -80,6 +82,19 @@ trait CommonUtils {
       else {
         None
       }
+    }
+  }
+
+  def userMethods(tpe: Type): List[MethodSymbol] = {
+    val allMethods = tpe.decls.collect{case x: MethodSymbol if !x.isConstructor && x.isPublic => x}
+    if(tpe.typeSymbol.isClass && tpe.typeSymbol.asClass.isCaseClass) {
+      val excluded = weakTypeOf[Product].members.map(_.name).toSet[Name]
+      val woExcluded = allMethods.filterNot(x => excluded(x.name))
+      val woCopy = woExcluded.filterNot(x => x.name.decodedName.toString.startsWith("copy"))
+      woCopy.toList
+    } else {
+      val excludedNames = Set("equals", "hashCode", "toString")
+      allMethods.filterNot(x => excludedNames(x.name.decodedName.toString)).toList
     }
   }
 }

@@ -10,6 +10,7 @@ import scala.reflect.macros.blackbox
 trait Options
 
 trait NoLoops extends Options
+
 trait NoSubtyping extends Options
 
 case class MGenerator[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options](expressions: Seq[MExpr[C, A, T]])
@@ -29,9 +30,15 @@ object MGenerator {
 
     import c.universe._
 
+    object Stage extends Enumeration {
+      val FromArgs, FromCtx, FuncApply, PairGen, Normal, FuncGen, GenComposite, FromCopro = Value
+    }
+
     object Cache {
 
-      private val m: mutable.Map[ExecCtx, Set[Candidate]] = mutable.Map.empty
+      private val cutBranches: mutable.Map[(GenCtxTpeProvider, Stage.Value), Int] = mutable.Map.empty
+
+      private val m: mutable.Map[GenCtxTpeProvider, Set[Candidate]] = mutable.Map.empty
 
       private val stackHashCodeMap: mutable.Map[Int, List[ExecCtx]] = mutable.Map.empty
 
@@ -43,42 +50,52 @@ object MGenerator {
         v
       }
 
-      def cached(f: => Set[Candidate])(implicit e: ExecCtx): Set[Candidate] = {
+      def cached(stage: Stage.Value)(f: => Set[Candidate])(implicit e: ExecCtx): Set[Candidate] = {
         Timer.tick("cached - entry")
-        val breakLoops = Timer.timer("loop detection"){
+
+        val tpeProvider = e.provider
+        val shouldCut = Timer.timer("Cut detection") {
+          cutBranches.get(tpeProvider, stage).exists(_ >= e.n)
+        }
+        if (shouldCut) {
+          Timer.tick("Cut!")
+          //log(s"Cut count ${cutBranches.size}!")
+          return Set()
+        }
+        val breakLoops = Timer.timer("loop detection") {
           val zeroed = e.zeroed
           e.noLoops && stackHashCodeMap
             .getOrElse(zeroed.hashCode, Nil)
             .exists(x => x.zeroed == zeroed && !(x eq e))
-          }
-        val existing: Set[Candidate] = Timer.timer("cache check"){
-          val x = m.getOrElse(e.zeroed, {Timer.tick("cache miss"); Set.empty[Candidate]})
-          x
+        }
+        val existing: Set[Candidate] = Timer.timer("cache check") {
+          m.getOrElse(tpeProvider, {
+            Timer.tick("cache miss")
+            Set.empty[Candidate]
+          })
         }
         if (breakLoops) existing
-        else if (existing.nonEmpty) {
-          if (existing.size < e.limit) {
+        else {
+          if (existing.size >= e.limit) {
+            Timer.tick("Used calculated")
+            existing
+          } else {
             val next = inStack(f)
+            if (next.isEmpty) cutBranches.updateWith(tpeProvider, stage)(_ map (_ max e.n) orElse Some(e.n))
             val newAll = Utils.concat(existing, next)
-            m.update(e.zeroed, newAll)
+            m.update(tpeProvider, newAll)
             newAll
           }
-          else existing
-        } else {
-          val v = inStack(f)
-          m.update(e.zeroed, v)
-          v
         }
       }
     }
 
 
-    def logAttempt(name: String)(implicit ctx: ExecCtx): Unit = {
-      //log(s"Attempt $name ${ctx.result} \n $ctx")
-    }
-
     implicit class Extensions(o: Set[Candidate]) {
-      def limit(implicit e: ExecCtx): Set[Candidate] = o.toSeq.sortBy(_.size).take(e.limit).toSet
+      def limit(implicit e: ExecCtx): Set[Candidate] = {
+        if(o.size <= e.limit) o
+        else o.toSeq.sortBy(_.size).take(e.limit).toSet
+      }
 
       def warnEmpty(stage: String)(implicit e: ExecCtx): Set[Candidate] = {
         if (o.isEmpty) {
@@ -90,15 +107,15 @@ object MGenerator {
 
     object Utils {
 
-      def concatLazy(opt1: => Set[Candidate], opt2: => Set[Candidate], opt3: => Set[Candidate])(implicit c: ExecCtx): Set[Candidate] = {
+      @inline def concatLazy(opt1: => Set[Candidate], opt2: => Set[Candidate], opt3: => Set[Candidate])(implicit c: ExecCtx): Set[Candidate] = {
         val current1 = opt1
-        if(current1.size >= c.limit) return current1.limit
+        if (current1.size >= c.limit) return current1.limit
         val current2 = current1 ++ opt2
-        if(current2.size >= c.limit) return current2.limit
+        if (current2.size >= c.limit) return current2.limit
         (current2 ++ opt3).limit
       }
 
-      @inline def concat(opts:Set[Candidate]*)(implicit c: ExecCtx): Set[Candidate] = opts.toSet.flatten.limit
+      @inline def concat(opts: Set[Candidate]*)(implicit c: ExecCtx): Set[Candidate] = opts.toSet.flatten.limit
 
       def transpose[A](s: Seq[Set[A]]): Set[Seq[A]] = {
         s match { //Most common cases are resolved without recursion
@@ -112,12 +129,9 @@ object MGenerator {
     }
 
 
-
-
-    def generateFromCtxFunctions(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
-      logAttempt("From func")
+    def generateFromCtxFunctions(implicit ctx: ExecCtx): Set[Candidate] = {
       if (ctx.n == 0) Set.empty
-      else {
+      else Cache.cached(Stage.FuncApply) {
         val candidates = Timer.timer("Choose correct functions") {
           ctx.ctx.providers.flatMap(_.fittingFunction(ctx.result)).toSet
         }
@@ -147,11 +161,10 @@ object MGenerator {
       }
     }
 
-    def generateFromArgs(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
-      logAttempt("From args")
+    def generateFromArgs(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.FromArgs) {
       ctx.args match { //Can we take result from arguments
         case SingleArg(t) if t <:< ctx.result => Set(ExprCreate.fromArgsEq)
-        case a: ListArgs => Timer.timer("m_<:<"){
+        case a: ListArgs => Timer.timer("m_<:<") {
           a.subTypeIndices(ctx.result).map(ExprCreate.fromArgsSelect).toSet
         }
         case CoproductArgs(_) => sys.error("Shouldn't be here")
@@ -159,9 +172,8 @@ object MGenerator {
       }
     }
 
-    def generatePair(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
-      logAttempt("from pair")
-      if (ctx.result <:< Types.pairType) { //Is result a pair ?
+    def generatePair(implicit ctx: ExecCtx): Set[Candidate] = {
+      if (ctx.result <:< Types.pairType) Cache.cached(Stage.PairGen) { //Is result a pair ?
         val e1 = generateNormal(ctx.withResult(ctx.result.typeArgs.head))
         if (e1.isEmpty) return Set.empty
         val e2 = generateNormal(ctx.withResult(ctx.result.typeArgs(1)))
@@ -169,44 +181,44 @@ object MGenerator {
       } else Set.empty
     }
 
-    def generateNormal(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
+    def generateNormal(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.Normal) {
       lazy val simpleCases = generateFromArgs
       lazy val fromFuncs = generateFromCtxFunctions //Can we generate result from functions from context
       lazy val pairs = generatePair
       Utils.concatLazy(simpleCases, fromFuncs, pairs).warnEmpty("GN")
     }
 
-    def generateFunc(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
-      logAttempt("Generate func")
+    def generateFunc(implicit ctx: ExecCtx): Set[Candidate] = {
       ctx.result match {
         case Func1Extractor(t, r) => //Result is a function
-          t match {
-            case t@Func1Extractor(_, _) => //Result argument is a function
-              generateFunc(
-                ctx.withCtx(c =>  c.prepend(typeToFuncProvider(t, 0))).withResult(r)
-              ).map(ExprCreate.abstractFunc).limit.warnEmpty("GEF1")
-            case t => //Result argument is not a function
-              ctx.args match {
-                case e: SingleArg =>
-                  generateFunc {
-                    ctx.withArgs(ListArgs(argsFromA(t) :: e :: Nil)).withResult(r)
-                  }.map(ExprCreate.abstractValNotH).limit.warnEmpty("GEF2")
-                case la: ListArgs =>
-                  generateFunc {
-                    ctx.withArgs(la.prepend(argsFromA(t))).withResult(r)
-                  }.map(ExprCreate.abstractVal).limit.warnEmpty("GEF3")
-                case CoproductArgs(_) => sys.error("Coproduct shouldnt be here")
-              }
+          Cache.cached(Stage.FuncGen) {
+            t match {
+              case t@Func1Extractor(_, _) => //Result argument is a function
+                generateFunc(
+                  ctx.withCtx(c => c.prepend(typeToFuncProvider(t, 0))).withResult(r)
+                ).map(ExprCreate.abstractFunc).limit.warnEmpty("GEF1")
+              case t => //Result argument is not a function
+                ctx.args match {
+                  case e: SingleArg =>
+                    generateFunc {
+                      ctx.withArgs(ListArgs(argsFromA(t) :: e :: Nil)).withResult(r)
+                    }.map(ExprCreate.abstractValNotH).limit.warnEmpty("GEF2")
+                  case la: ListArgs =>
+                    generateFunc {
+                      ctx.withArgs(la.prepend(argsFromA(t))).withResult(r)
+                    }.map(ExprCreate.abstractVal).limit.warnEmpty("GEF3")
+                  case CoproductArgs(_) => sys.error("Coproduct shouldnt be here")
+                }
+            }
           }
         case _ => generateNormal(ctx) //Result is not a function
       }
     }
 
-    def generateComposite(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
-      logAttempt("Gen composite")
-      if (ctx.result <:< Types.hlistType) {
+    def generateComposite(implicit ctx: ExecCtx): Set[Candidate] = {
+      if (ctx.result <:< Types.hlistType) Cache.cached(Stage.GenComposite) {
         val sTypes = Types.split2ArgsRec(ctx.result, Types.hconsType)
-        val options = sTypes.map(ctx.withResult).map(generateComposite(_).limit)
+        val options = sTypes.map(ctx.withResult).map(generateComposite(_))
         if (options.exists(_.isEmpty)) Set.empty
         else {
           options.zip(sTypes).foldRight((Set(ExprCreate.hnil), Types.hnilType)) {
@@ -216,7 +228,7 @@ object MGenerator {
                 ).toSeq.sortBy(_.size).take(ctx.limit).toSet -> (et :::: rt)
           }._1
         }
-      } else if (ctx.result <:< Types.cconsType) {
+      } else if (ctx.result <:< Types.cconsType) Cache.cached(Stage.GenComposite) {
         val a1 = ctx.result.typeArgs.head
         val rest = ctx.result.typeArgs(1)
         val a1Trees = generateComposite(ctx.withResult(a1))
@@ -229,10 +241,9 @@ object MGenerator {
       }
     }
 
-    def generateFromCoproduct(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached {
-      logAttempt("From copro")
+    def generateFromCoproduct(implicit ctx: ExecCtx): Set[Candidate] = {
       ctx.args match {
-        case CoproductArgs(t) =>
+        case CoproductArgs(t) => Cache.cached(Stage.FromCopro) {
           val mapped = t.map(ctx.withArgs).map(generateComposite(_))
           if (mapped.exists(_.isEmpty)) {
             val tt = t.zip(mapped).filter(_._2.isEmpty).map(_._1)
@@ -244,6 +255,7 @@ object MGenerator {
               (for (e1 <- e; f1 <- f) yield ExprCreate.coproduct(e1, f1, t, ft)) -> (t +:+: ft)
             }._1
           }
+        }
         case _ => generateComposite(ctx)
       }
     }
@@ -274,7 +286,6 @@ object MGenerator {
           }
           log(Timer.printable)
           reified
-
       }
     }
   }

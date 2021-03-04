@@ -95,8 +95,12 @@ trait GeneratorTypes extends CommonUtils {
         funTree, argTree
       )
 
-    def applyNative(exTree: Candidate, fun: Tree, name: String)(implicit ctx: ExecCtx): Candidate =
-      Candidate(q"$ns.ApplyNative($exTree, $fun, $name)", StructureTree.ApplyNative(name, exTree), exTree)
+    def applyNative(exTree: Candidate, fun: Tree, name: String, member: Boolean)(implicit ctx: ExecCtx): Candidate =
+      Candidate(
+        q"$ns.ApplyNative[$ctxTypeT, $argTypeT, ${TypeTree(exTree.ec.resType)}, $resTypeT]($exTree)($fun, $name, $member)",
+        StructureTree.ApplyNative(name, exTree),
+        exTree
+      )
 
     def pair(a: Candidate, b: Candidate)(implicit ctx: ExecCtx): Candidate =
       Candidate(
@@ -296,7 +300,6 @@ trait GeneratorTypes extends CommonUtils {
 
     @tailrec
     private def compareSingle(s: Type, pt: Type, e: Type): Option[Type] = {
-      //log(s"Attempt to unify: $s - $pt and $e")
       if (pt.typeArgs.nonEmpty && e.typeArgs.nonEmpty) {
         if (pt.typeConstructor =:= e.typeConstructor) {
           (pt.typeArgs, e.typeArgs) match {
@@ -325,7 +328,8 @@ trait GeneratorTypes extends CommonUtils {
     override def fittingFunction(expectedResult: c.universe.Type): Option[Func] = {
       val cand = symbols.keys.map(x => x -> compareSingle(x, genType.result, expectedResult.dealias))
       if (cand.exists(_._2.isEmpty)) return None
-      val pairs = cand.collect{case (k, Some(v)) => symbols(k) -> v}.flatMap{x => x._1.map(_ -> x._2)}
+      val pairs = cand.collect{case (k, Some(v)) => symbols(k) -> v}
+        .flatMap{x => x._1.map(a => a -> x._2)}.toArray
       val tt = wholeType.map(x => pairs.find(_._1 =:= x).map(_._2).getOrElse(x))
       val gf = typeToFunc(tt, idx).head
       //log(s"Generic candidate. cands: $cand exp: $expectedResult, got:  ${gf.result}")
@@ -348,10 +352,10 @@ trait GeneratorTypes extends CommonUtils {
     def wholeType: Type
   }
 
-  case class SimpleFunc(arg: Type, result: Type, idx: Int, subIndex: Int) extends Func {
+  case class SimpleFunc1(arg: Type, result: Type, idx: Int, subIndex: Int) extends Func {
     def args: Seq[Type] = Seq(arg)
 
-    override def withIndex(n: Int): SimpleFunc = copy(idx = n)
+    override def withIndex(n: Int): SimpleFunc1 = copy(idx = n)
 
     override def wholeType: c.universe.Type = arg ==> result
 
@@ -378,6 +382,46 @@ trait GeneratorTypes extends CommonUtils {
       }
   }
 
+  case class ObjectFunc(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int) extends Func {
+    val inner = {
+      if(method.paramLists.flatten.nonEmpty) {
+        def buildT(args: List[List[Symbol]]): Type = args match {
+          case List(s) :: tail => s.info ==> buildT(tail)
+          case Nil => method.returnType
+        }
+        typeToFunc(buildT(method.paramLists), 0, 0).headOption
+      } else None
+    }
+
+    override def args: Seq[c.universe.Type] = objType +: inner.map(_.args).getOrElse(Nil)
+
+    override def result: c.universe.Type = inner.map(_.result).getOrElse(method.returnType)
+
+    override def subIndex: Int = 0
+
+    override def withIndex(n: Int): Func = copy(idx = n)
+
+    override def apply(objTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate = {
+      val h = trees.head
+      if(inner.nonEmpty) {
+        val funcTree = ExprCreate.applyNative(
+          h,
+          q"(x: ${TypeTree(objType)}) => (x.$method):${TypeTree(inner.get.wholeType)}",
+          method.name.decodedName.toString,
+          true
+        )(ctx.withResult(inner.get.wholeType))
+        inner.get(funcTree, trees.tail)
+      } else {
+        ExprCreate.applyNative(
+          h,
+          q"(x: ${TypeTree(objType)}) => x.$method",
+          method.name.decodedName.toString,
+          true
+        )(ctx.withResult(result))
+      }
+    }
+  }
+
   def typeToFuncProvider(t: Type, idx: Int, subIndex: Int = 0): List[FuncProvider] = {
     t.dealias match {
       case t@Func1Extractor(_, _) if t.find(_ <:< Types.varType).isDefined =>
@@ -394,10 +438,16 @@ trait GeneratorTypes extends CommonUtils {
       case Func1Extractor(arg, r@Func1Extractor(_, _)) =>
         List(ComplexFunc(arg, typeToFunc(r, idx).head, idx, subIndex))
       case Func1Extractor(arg, t) =>
-        List(SimpleFunc(arg, t, idx, subIndex))
+        List(SimpleFunc1(arg, t, idx, subIndex))
       case RefinedType(inner, _) =>
         inner.zipWithIndex.flatMap { case (t, i) => typeToFunc(t, idx, i) }
-      case x => sys.error("Match error " + x)
+      case t if t <:< Types.objectProviderTpe =>
+        val tpe = t.typeArgs.head
+        val methods = userMethods(tpe)
+        log(s"Methods: ${methods.mkString("\n")}")
+        methods.map(x => ObjectFunc(t, tpe, x, idx))
+      case MethodType(_, tpe) => typeToFunc(tpe, idx, subIndex)
+      case x => sys.error("Match error " + x + " " + showRaw(x))
     }
   }
 
@@ -412,6 +462,7 @@ trait GeneratorTypes extends CommonUtils {
     private def intersect(t: List[Type]): Type = {
       t match {
         case List(t) => t
+        case l if l.head.isInstanceOf[ObjectFunc] => l.head.asInstanceOf[ObjectFunc].objType
         case l => internal.intersectionType(l)
       }
     }
@@ -468,7 +519,7 @@ trait GeneratorTypes extends CommonUtils {
       }
     }
 
-    override def hashCode(): Int = 0
+    override val hashCode: Int = t.typeSymbol.name.decodedName.hashCode()
   }
 
   implicit def wrap(t: Type): TypeEqualityWrapper = TypeEqualityWrapper(t)
@@ -509,6 +560,8 @@ trait GeneratorTypes extends CommonUtils {
       def withArg(arg: Type): CustomGenCtxTpeProvider = copy(argTypeT = arg)
 
       def withRes(res: Type): CustomGenCtxTpeProvider = copy(resTypeT = res)
+
+      override val hashCode: Int = super.hashCode()
     }
 
     def apply(ctx: Type, arg: Type, res: Type): CustomGenCtxTpeProvider =
