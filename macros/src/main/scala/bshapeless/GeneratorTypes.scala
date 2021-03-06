@@ -4,7 +4,7 @@ import shapeless.HList
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.annotation.tailrec
-
+import scala.collection.mutable
 import scala.language.implicitConversions
 
 trait GeneratorTypes extends CommonUtils {
@@ -15,10 +15,13 @@ trait GeneratorTypes extends CommonUtils {
   sealed abstract class StructureTree(val treeName: String)
 
   object StructureTree {
+
     case class HNilTree(tpe: String) extends StructureTree(s"hnil $tpe")
+
     case class HListResult(head: StructureTree, tail: StructureTree) extends StructureTree("hcons")
 
     case class CNilArg(tpe: String) extends StructureTree(s"cnilArg $tpe")
+
     case class CoproductArgs(head: StructureTree, tail: StructureTree) extends StructureTree("cconsArg")
 
     case class SelectArgs(n: Int) extends StructureTree(s"selectArg $n")
@@ -40,6 +43,7 @@ trait GeneratorTypes extends CommonUtils {
     case class InlResult(inner: StructureTree) extends StructureTree("inl")
 
     case class InrResult(inner: StructureTree) extends StructureTree("inr")
+
   }
 
   object ExprCreate {
@@ -193,16 +197,15 @@ trait GeneratorTypes extends CommonUtils {
 
     private def next: Int = _counter.getAndIncrement()
 
-    private val m: scala.collection.mutable.Map[TreeShort, Candidate] =
-      scala.collection.mutable.Map.empty
+    private val m: scala.collection.mutable.AnyRefMap[TreeShort, Candidate] =
+      scala.collection.mutable.AnyRefMap.empty
 
     def apply(tree: Tree, structTree: StructureTree, dependencies: Candidate*)(implicit ec: GenCtxTpeProvider): Candidate = {
-      Timer.timer("Candidate creator") {
-        m.getOrElseUpdate(
-          TreeShort(structTree.treeName, dependencies.map(_.no), GenCtxTpeProvider.derive(ec)),
-          new Candidate(tree, next, dependencies, structTree, ec)
-        )
-      }
+      val derived = GenCtxTpeProvider.derive(ec)
+      m.getOrElseUpdate(
+        TreeShort(structTree.treeName, dependencies.map(_.no), derived),
+        new Candidate(tree, next, dependencies, structTree, derived)
+      )
     }
 
     implicit val liftCandidate: Liftable[Candidate] = (c: Candidate) => c.term
@@ -212,6 +215,8 @@ trait GeneratorTypes extends CommonUtils {
 
   sealed trait Args {
     def wholeType: Type
+
+    lazy val wholeTypeWrapper: TypeEqualityWrapper = wholeType
   }
 
   case class SingleArg(wholeType: Type) extends Args
@@ -221,15 +226,6 @@ trait GeneratorTypes extends CommonUtils {
     //and use of such aliases make compilation faster.
     //big types repeated many types are a lot of work to refcheck compilation phase
 
-    @tailrec
-    final def size(t: Type, r: Seq[Type] = Nil, im: Int = 0): Int = {
-      if(t.typeArgs.nonEmpty){
-        size(t.typeArgs.head.dealias, t.typeArgs.tail ++ r, im + 1)
-      } else {
-        if(r.isEmpty) im + 1
-        else size(r.head.dealias, r.tail, im + 1)
-      }
-    }
 
     def prepend(newArgs: Args): ListArgs = {
       ListArgs(newArgs +: t, wholeTypeOpt.map(newArgs.wholeType :::: _))
@@ -237,9 +233,9 @@ trait GeneratorTypes extends CommonUtils {
 
     private val groupBySize = scala.collection.immutable.IntMap.from(
       t.zipWithIndex
-      .collect{case (SingleArg(t), i) => t -> i}
-      .groupBy(x => size(x._1))
-      .view.mapValues(_.toArray)
+        .collect { case (SingleArg(t), i) => t -> i }
+        .groupBy(x => Types.size(x._1))
+        .view.mapValues(_.toArray)
     )
 
     log(s"Arg map sizes: ${groupBySize.view.mapValues(_.length).mkString("\n")}")
@@ -252,10 +248,10 @@ trait GeneratorTypes extends CommonUtils {
 
     @inline
     def subTypeIndices(tpe: Type)(implicit ec: ExecCtx): Seq[Int] = {
-      if(ec.noSubtyping)
-        groupBySize.getOrElse(size(tpe), Array.empty[(Type, Int)]).filter(_._1 =:= tpe).map(_._2)
+      if (ec.noSubtyping)
+        groupBySize.getOrElse(Types.size(tpe), Array.empty[(Type, Int)]).filter(_._1 =:= tpe).map(_._2)
       else
-        t.zipWithIndex.collect{case (SingleArg(t), i) if t <:< tpe => i}
+        t.zipWithIndex.collect { case (SingleArg(t), i) if t <:< tpe => i }
     }
   }
 
@@ -277,14 +273,14 @@ trait GeneratorTypes extends CommonUtils {
   }
 
   trait FuncProvider extends Indexed[FuncProvider] {
-    def fittingFunction(expectedResult: Type): Option[Func]
+    def fittingFunction(expectedResult: Type)(implicit e: ExecCtx): Option[Func]
 
     def wholeType: Type
   }
 
   case class SimpleFuncProvider(f: Func) extends FuncProvider {
-    override def fittingFunction(expectedResult: c.universe.Type): Option[Func] =
-      Some(f).filter(_.result <:< expectedResult)
+    override def fittingFunction(expectedResult: c.universe.Type)(implicit e: ExecCtx): Option[Func] =
+      Some(f).filter(x => if (e.noSubtyping) x.result =:= expectedResult else x.result <:< expectedResult)
 
     override def wholeType: c.universe.Type = f.wholeType
 
@@ -298,42 +294,103 @@ trait GeneratorTypes extends CommonUtils {
   case class GenericFuncProvider(wholeType: Type, symbols: Map[Type, Set[Type]], idx: Int, subIndex: Int) extends FuncProvider {
     private val genType = typeToFunc(wholeType, idx, subIndex).head
 
+    private val (poly, polyMap) = toPolyType(wholeType)
+
+    val polyBuilder = toFuncBuilder(polyMap.values.toSet, poly)
+
+    def toPolyType(t: Type): (Type, Map[Type, Symbol]) = {
+      def toSymbol(name: String): Symbol = {
+        val td = TypeDef(Modifiers(Flag.PARAM), TypeName(name), Nil, TypeBoundsTree(EmptyTree, EmptyTree))
+        val td1 = c.typecheck(td)
+        td1.symbol
+      }
+
+      val toSymbols = symbols.keySet.map(x => x -> toSymbol(x.typeSymbol.name.decodedName.toString))
+      val toReplace = toSymbols.flatMap(x => symbols(x._1).map(_ -> x._2))
+      val repl = t.map(x => toReplace.find(_._1 =:= x).map(_._2).map(_.asType.toType).getOrElse(x))
+
+      (repl, toSymbols.toMap)
+    }
+
+    def toFuncBuilder(s: Set[Symbol], t: Type): FuncBuilder = {
+      t match {
+        case Func1Extractor(a, r@Func1Extractor(_, _)) =>
+          ComplexFuncBuilder(toTypeBuilder(s, a), toFuncBuilder(s, r))
+        case Func1Extractor(a, r) =>
+          SimpleFuncBuilder(toTypeBuilder(s, a), toTypeBuilder(s, r))
+      }
+    }
+
+    def toTypeBuilder(s: Set[Symbol], t: Type): TypeBuilder = {
+      val found = s.find(_.asType.toType =:= t)
+      found match {
+        case Some(value) => Selector(value)
+        case None =>
+          if (t.typeArgs.nonEmpty)
+            Apply(t.typeConstructor, t.typeArgs.map(toTypeBuilder(s, _)))
+          else ConstType(t)
+      }
+    }
+
+    sealed trait FuncBuilder {
+      def buildFunc(f: Map[Symbol, Type]): Func
+    }
+
+    case class SimpleFuncBuilder(argBuilder: TypeBuilder, resBuilder: TypeBuilder) extends FuncBuilder {
+      override def buildFunc(f: Map[Symbol, c.universe.Type]): Func =
+        SimpleFunc1(argBuilder.build(f), resBuilder.build(f), idx, subIndex)
+    }
+
+    case class ComplexFuncBuilder(argBuilder: TypeBuilder, innerBuilder: FuncBuilder) extends FuncBuilder {
+      override def buildFunc(f: Map[Symbol, c.universe.Type]): Func =
+        ComplexFunc(argBuilder.build(f), innerBuilder.buildFunc(f), idx, subIndex)
+    }
+
+    sealed trait TypeBuilder {
+      def build(m: Map[Symbol, Type]): Type
+    }
+
+    case class Selector(s: Symbol) extends TypeBuilder {
+      override def build(m: Map[Symbol, Type]): Type = m(s)
+    }
+
+    case class ConstType(t: Type) extends TypeBuilder {
+      override def build(m: Map[Symbol, Type]): Type = t
+    }
+
+    case class Apply(tyCon: Type, builders: List[TypeBuilder]) extends TypeBuilder {
+      override def build(m: Map[Symbol, Type]): Type =
+        appliedType(tyCon, builders.map(_.build(m)))
+    }
+
     @tailrec
-    private def compareSingle(s: Type, pt: Type, e: Type): Option[Type] = {
-      if (pt.typeArgs.nonEmpty && e.typeArgs.nonEmpty) {
-        if (pt.typeConstructor =:= e.typeConstructor) {
-          (pt.typeArgs, e.typeArgs) match {
-            case (a :: Nil, b :: Nil) => compareSingle(s, a, b)
-            case (a1 :: a2 :: Nil, b1 :: b2 :: Nil) =>
-              if(a1.contains(s.typeSymbol)) compareSingle(s, a1, b1)
-              else compareSingle(s, a2, b2)
-            case (a1 :: a2 :: a3 :: Nil, b1 :: b2 :: b3 :: Nil) =>
-              if(a1.contains(s.typeSymbol)) compareSingle(s, a1, b1)
-              else if(a2.contains(s.typeSymbol)) compareSingle(s, a2, b2)
-              else compareSingle(s, a3, b3)
-            case (pta, ea) =>
-              pta.zip(ea).find(_._1.contains(s.typeSymbol)) match {
-                case Some((pp, ep)) => compareSingle(s, pp, ep)
-                case None =>None
-              }
+    private def compareSingle(s: Seq[Type], top: Seq[(Type, Type)], cm: Map[Type, Type]): Map[Type, Type] = {
+      top match {
+        case Seq() => cm
+        case (pt, e) +: t =>
+          val pta = pt.typeArgs
+          val ea = e.typeArgs
+          if (pta.nonEmpty && ea.nonEmpty) {
+            if (pt.typeConstructor =:= e.typeConstructor) compareSingle(s, pta.zip(ea) ++: t, cm)
+            else compareSingle(s, t, cm)
+          } else {
+            val cn = s.filter(pt <:< _).map(_ -> e)
+            val nc = cm ++ cn
+            if (nc.size == s.size) nc
+            else compareSingle(s, t, nc)
           }
-        }
-        else None
-      } else if (pt <:< s)
-        Some(e)
-      else None
+      }
     }
 
 
-    override def fittingFunction(expectedResult: c.universe.Type): Option[Func] = {
-      val cand = symbols.keys.map(x => x -> compareSingle(x, genType.result, expectedResult.dealias))
-      if (cand.exists(_._2.isEmpty)) return None
-      val pairs = cand.collect{case (k, Some(v)) => symbols(k) -> v}
-        .flatMap{x => x._1.map(a => a -> x._2)}.toArray
-      val tt = wholeType.map(x => pairs.find(_._1 =:= x).map(_._2).getOrElse(x))
-      val gf = typeToFunc(tt, idx).head
+    override def fittingFunction(expectedResult: c.universe.Type)(implicit e: ExecCtx): Option[Func] = {
+      val cand = compareSingle(symbols.keys.toList, Seq((genType.result, expectedResult.dealias)), Map.empty)
+      if (cand.size != symbols.size) return None
+
+      val m = cand.map(x => polyMap(x._1) -> x._2)
+      val gf = polyBuilder.buildFunc(m)
       //log(s"Generic candidate. cands: $cand exp: $expectedResult, got:  ${gf.result}")
-      Some(gf).filter(_.result <:< expectedResult)
+      Some(gf).filter(x => if (e.noSubtyping) x.result =:= expectedResult else x.result <:< expectedResult)
     }
 
     override def withIndex(n: Int): FuncProvider = copy(idx = n)
@@ -353,27 +410,28 @@ trait GeneratorTypes extends CommonUtils {
   }
 
   case class SimpleFunc1(arg: Type, result: Type, idx: Int, subIndex: Int) extends Func {
-    def args: Seq[Type] = Seq(arg)
+    val args: Seq[Type] = Seq(arg)
 
     override def withIndex(n: Int): SimpleFunc1 = copy(idx = n)
 
-    override def wholeType: c.universe.Type = arg ==> result
+    override val wholeType: c.universe.Type = arg ==> result
 
     def apply(funcTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate =
       trees match {
         case Seq(ar) => ExprCreate.applyExpr(funcTree, ar, TypeTree(arg), TypeTree(result))(ctx.withResult(result))
         case _ => sys.error("Incorrect number of arguments")
       }
+
   }
 
   case class ComplexFunc(arg: Type, inner: Func, idx: Int, subIndex: Int) extends Func {
-    def args: Seq[Type] = arg +: inner.args
+    val args: Seq[Type] = arg +: inner.args
 
     def result: Type = inner.result
 
     override def withIndex(n: Int): ComplexFunc = copy(inner = inner.withIndex(n), idx = n)
 
-    override def wholeType: c.universe.Type = arg ==> inner.wholeType
+    override val wholeType: c.universe.Type = arg ==> inner.wholeType
 
     def apply(funcTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate =
       trees match {
@@ -384,11 +442,12 @@ trait GeneratorTypes extends CommonUtils {
 
   case class ObjectFunc(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int) extends Func {
     val inner = {
-      if(method.paramLists.flatten.nonEmpty) {
+      if (method.paramLists.flatten.nonEmpty) {// Currently only single param lists are supported. Just like in Func
         def buildT(args: List[List[Symbol]]): Type = args match {
           case List(s) :: tail => s.info ==> buildT(tail)
           case Nil => method.returnType
         }
+
         typeToFunc(buildT(method.paramLists), 0, 0).headOption
       } else None
     }
@@ -403,7 +462,7 @@ trait GeneratorTypes extends CommonUtils {
 
     override def apply(objTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate = {
       val h = trees.head
-      if(inner.nonEmpty) {
+      if (inner.nonEmpty) {
         val funcTree = ExprCreate.applyNative(
           h,
           q"(x: ${TypeTree(objType)}) => (x.$method):${TypeTree(inner.get.wholeType)}",
@@ -478,6 +537,8 @@ trait GeneratorTypes extends CommonUtils {
       providers.groupBy(_.idx).map[(Int, Type)] { case (i, f) => i -> intersect(f.map(_.wholeType))
       }.toList.sortBy(_._1).map(_._2).foldRight(Types.hnilType) { _ :::: _ }
     }
+
+    val wholeTypeWrapper: TypeEqualityWrapper = wholeType
   }
 
   def toInt[L <: shapeless.Nat : c.WeakTypeTag]: Int = {
@@ -511,18 +572,36 @@ trait GeneratorTypes extends CommonUtils {
     )
   }
 
-  case class TypeEqualityWrapper(t: Type) {
-    override def equals(o: Any): Boolean = {
+  case class TypeEqualityWrapper private(t: Type) {
+    override def equals(o: Any): Boolean = Timer.timer("TEW equ") {
       o match {
-        case TypeEqualityWrapper(tt) => t =:= tt
+        case o@TypeEqualityWrapper(tt) => (o eq this) || (t eq tt) || (
+          size == o.size &&
+            t =:= tt
+          )
         case _ => false
       }
     }
 
-    override val hashCode: Int = t.typeSymbol.name.decodedName.hashCode()
+    val size = Types.size(t)
+
+    override val hashCode: Int = t.typeSymbol.name.decodedName.toString.hashCode | size
   }
 
-  implicit def wrap(t: Type): TypeEqualityWrapper = TypeEqualityWrapper(t)
+  object TypeEqualityWrapper {
+    private val cache = mutable.AnyRefMap.empty[Type, TypeEqualityWrapper]
+    //Attempt to catch referencial equality.
+    //Its easier to check than type equality.
+    def apply(t: Type): TypeEqualityWrapper = Timer.timer("TEW cache") {
+      Timer.tick("TEW cache req")
+      cache.getOrElseUpdate(t, {
+        Timer.tick("TEW cache miss")
+        new TypeEqualityWrapper(t)
+      })
+    }
+  }
+
+  implicit def wrap(t: Type): TypeEqualityWrapper = TypeEqualityWrapper(t.dealias)
 
   implicit def unwrap(t: TypeEqualityWrapper): Type = t.t
 
@@ -549,19 +628,40 @@ trait GeneratorTypes extends CommonUtils {
 
   object GenCtxTpeProvider {
 
-    case class CustomGenCtxTpeProvider(ctxTypeT: TypeEqualityWrapper, argTypeT: TypeEqualityWrapper, resTypeT: TypeEqualityWrapper) extends GenCtxTpeProvider {
+    case class CustomGenCtxTpeProvider private(ctxTypeT: TypeEqualityWrapper, argTypeT: TypeEqualityWrapper, resTypeT: TypeEqualityWrapper) extends GenCtxTpeProvider {
 
       def ctxType: Type = ctxTypeT
+
       def argType: Type = argTypeT
+
       def resType: Type = resTypeT
 
-      def withCtx(ctx: Type): CustomGenCtxTpeProvider = copy(ctxTypeT = ctx)
+      def withCtx(ctx: Type): CustomGenCtxTpeProvider = CustomGenCtxTpeProvider(ctx, argTypeT, resTypeT)
 
-      def withArg(arg: Type): CustomGenCtxTpeProvider = copy(argTypeT = arg)
+      def withArg(arg: Type): CustomGenCtxTpeProvider = CustomGenCtxTpeProvider(ctxTypeT, arg, resTypeT)
 
-      def withRes(res: Type): CustomGenCtxTpeProvider = copy(resTypeT = res)
+      def withRes(res: Type): CustomGenCtxTpeProvider = CustomGenCtxTpeProvider(ctxTypeT, argTypeT, res)
 
       override val hashCode: Int = super.hashCode()
+
+    }
+
+    object CustomGenCtxTpeProvider {
+      type T3 = (TypeEqualityWrapper, TypeEqualityWrapper, TypeEqualityWrapper)
+      private val cache = mutable.LongMap.empty[mutable.AnyRefMap[T3, CustomGenCtxTpeProvider]]
+
+      //Again referential equality
+      //Size seems to be the best heuristic to catch different types
+      def apply(ctx: TypeEqualityWrapper, arg: TypeEqualityWrapper, res: TypeEqualityWrapper): CustomGenCtxTpeProvider = {
+        Timer.timer("CGCTP time") {
+          Timer.tick("CGCTP count")
+          Timer.set("CGCTP size", cache.values.map(_.size).sum)
+          val hash = (ctx.size << 20) | (arg.size << 10) | res.size
+          cache
+            .getOrElseUpdate(hash, mutable.AnyRefMap.empty)
+            .getOrElseUpdate((ctx, arg, res), new CustomGenCtxTpeProvider(ctx, arg, res))
+        }
+      }
     }
 
     def apply(ctx: Type, arg: Type, res: Type): CustomGenCtxTpeProvider =
@@ -612,7 +712,8 @@ trait GeneratorTypes extends CommonUtils {
 
     override def resType: c.universe.Type = result
 
-    def provider: GenCtxTpeProvider.CustomGenCtxTpeProvider = GenCtxTpeProvider.derive(this)
+    lazy val provider: GenCtxTpeProvider.CustomGenCtxTpeProvider =
+      GenCtxTpeProvider.CustomGenCtxTpeProvider(ctx.wholeTypeWrapper, args.wholeTypeWrapper, resultT)
   }
 
 }

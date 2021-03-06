@@ -37,7 +37,7 @@ class SelectorWrapperIndexed[H <: HList, T](val index: Int) extends SelectorWrap
     @tailrec
     def select(h: HList, i: Int): T =
       h match {
-        case x: shapeless.::[T, HList] if i == 0 => x.head
+        case x: shapeless.::[T@unchecked, HList] if i == 0 => x.head
         case x: shapeless.::[_, HList] => select(x.tail, i - 1)
         case nil: HNil => sys.error("Index greater than list length")
       }

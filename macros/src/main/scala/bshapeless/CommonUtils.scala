@@ -1,5 +1,6 @@
 package bshapeless
 
+import scala.annotation.tailrec
 import scala.reflect.macros.blackbox
 
 trait CommonUtils {
@@ -37,6 +38,18 @@ trait CommonUtils {
       }
       s.reverse
     }
+
+    final def size(t: Type): Int = Timer.timer("Type size mesaure") {sizer(t)}
+
+    @tailrec
+    private final def sizer(t: Type, r: Seq[Type] = Nil, im: Int = 0): Int =  {
+      if(t.typeArgs.nonEmpty){
+        sizer(t.typeArgs.head.dealias, t.typeArgs.tail ++ r, im + 1)
+      } else {
+        if(r.isEmpty) im + 1
+        else sizer(r.head.dealias, r.tail, im + 1)
+      }
+    }
   }
 
   object Timer extends TimerCollector
@@ -46,23 +59,20 @@ trait CommonUtils {
       appliedType(tycon, args.toList)
     }
 
-    private def applyType(tycon: c.universe.Type, args: c.universe.Type*): c.universe.Type =
-      apply(tycon, args: _*)
-
     private def isSubType(t: c.universe.Type, expected: c.universe.Type): Boolean =
       t <:< expected
 
     def ::::(a1: Type): Type = { //Methods ending with colon bind to right eg. t1 :::: t2 == t2.::::(t1)
       assert(isSubType(a2, Types.hlistType), a2)
-      applyType(Types.hconsType.typeConstructor, a1, a2)
+      appliedType(Types.hconsType.typeConstructor, a1, a2)
     }
 
     def +:+:(a1: Type): Type = {
       assert(isSubType(a2, Types.coproductType))
-      applyType(Types.cconsType.typeConstructor, a1, a2)
+      appliedType(Types.cconsType.typeConstructor, a1, a2)
     }
 
-    def ==>(a1: Type): Type = applyType(Types.funcType.typeConstructor, a2, a1)
+    def ==>(a1: Type): Type = appliedType(Types.funcType.typeConstructor, a2, a1)
 
     def collect: Set[Type] = {
       val c = scala.collection.mutable.ListBuffer.empty[Type]

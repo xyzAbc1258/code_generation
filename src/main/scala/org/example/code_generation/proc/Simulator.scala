@@ -57,7 +57,7 @@ object Simulator {
       Ctx,
       gen.Repr,
       ExecutorState => (ExecutorState with Result),
-      NoLoops
+      Options
     ]
 
     for (e <- Set(es2.expressions: _*).toList.sortBy(_.size)) {

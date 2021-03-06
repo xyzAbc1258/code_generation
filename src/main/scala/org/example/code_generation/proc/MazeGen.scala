@@ -10,14 +10,24 @@ object MazeGen {
 
   def main(args: Array[String]): Unit = {
     //println(genMaze(30, free.flatten, "P"))
-    println(genNat(23, 80, "shapeless.Succ", "Z"))
+    //println(genNat(23, 80, "shapeless.Succ", "Z"))
+    println(fromFile("./mtext.txt", "P"))
   }
 
-  def genMaze(rowsC: Int, arr: Array[Boolean], pairS: String): String = {
+  def genMaze(rowsC: Int, arr: Array[Array[Boolean]], pairS: String): String = {
     def makep(r: Int, c: Int): String = s"$pairS[_$r, _$c]"
-    arr.grouped(rowsC).zipWithIndex.flatMap{
+    arr.zipWithIndex.flatMap{
       case (rowb, r) => rowb.zipWithIndex.map{case (v, c) => v -> makep(r, c)}
     }.filter(_._1).map(_._2).mkString("::") ++ "::HNil"
+  }
+
+  def fromFile(path: String, pairS: String): String = {
+    val s = scala.io.Source.fromFile(path, "UTF-8")
+    val lines = s.getLines().filterNot(_.isEmpty).toList
+    s.close()
+    val woEnd = lines.map(_.replace("|", ""))
+    val arr = lines.map(_.map(_ != 'X').toArray).toArray
+    genMaze(woEnd.head.length, arr, pairS)
   }
 
   val free: Array[Array[Boolean]] = {

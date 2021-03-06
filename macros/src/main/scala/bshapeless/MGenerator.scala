@@ -36,19 +36,11 @@ object MGenerator {
 
     object Cache {
 
-      private val cutBranches: mutable.Map[(GenCtxTpeProvider, Stage.Value), Int] = mutable.Map.empty
+      private val cutBranches: mutable.AnyRefMap[(GenCtxTpeProvider, Stage.Value), Int] = mutable.AnyRefMap.empty
 
-      private val m: mutable.Map[GenCtxTpeProvider, Set[Candidate]] = mutable.Map.empty
+      private val m: mutable.AnyRefMap[GenCtxTpeProvider, Set[Candidate]] = mutable.AnyRefMap.empty
 
-      private val stackHashCodeMap: mutable.Map[Int, List[ExecCtx]] = mutable.Map.empty
-
-      @inline def inStack[T](f: => Set[Candidate])(implicit e: ExecCtx): Set[Candidate] = {
-        val hash = e.zeroed.hashCode
-        stackHashCodeMap.updateWith(hash)(_ map (e :: _) orElse Some(List(e)))
-        val v = f
-        stackHashCodeMap.updateWith(hash)(_ map (_.tail))
-        v
-      }
+      private val stackHashCodeMap: mutable.LongMap[List[ExecCtx]] = mutable.LongMap.empty
 
       def cached(stage: Stage.Value)(f: => Set[Candidate])(implicit e: ExecCtx): Set[Candidate] = {
         Timer.tick("cached - entry")
@@ -59,14 +51,12 @@ object MGenerator {
         }
         if (shouldCut) {
           Timer.tick("Cut!")
-          //log(s"Cut count ${cutBranches.size}!")
           return Set()
         }
         val breakLoops = Timer.timer("loop detection") {
-          val zeroed = e.zeroed
           e.noLoops && stackHashCodeMap
-            .getOrElse(zeroed.hashCode, Nil)
-            .exists(x => x.zeroed == zeroed && !(x eq e))
+            .getOrElse(tpeProvider.hashCode, Nil)
+            .exists(x => (x.provider eq tpeProvider) && !(x eq e))
         }
         val existing: Set[Candidate] = Timer.timer("cache check") {
           m.getOrElse(tpeProvider, {
@@ -74,14 +64,21 @@ object MGenerator {
             Set.empty[Candidate]
           })
         }
-        if (breakLoops) existing
+        if (breakLoops) {
+          Timer.tick("Break")
+          existing
+        }
         else {
           if (existing.size >= e.limit) {
             Timer.tick("Used calculated")
             existing
           } else {
-            val next = inStack(f)
-            if (next.isEmpty) cutBranches.updateWith(tpeProvider, stage)(_ map (_ max e.n) orElse Some(e.n))
+            val hash = tpeProvider.hashCode
+            stackHashCodeMap.updateWith(hash)(_ map (e :: _) orElse Some(List(e)))
+            val next = f
+            stackHashCodeMap.updateWith(hash)(_ map (_.tail) filter (_.nonEmpty))
+            if (next.isEmpty)
+              cutBranches.updateWith(tpeProvider, stage)(_ map (_ max e.n) orElse Some(e.n))
             val newAll = Utils.concat(existing, next)
             m.update(tpeProvider, newAll)
             newAll
@@ -93,15 +90,8 @@ object MGenerator {
 
     implicit class Extensions(o: Set[Candidate]) {
       def limit(implicit e: ExecCtx): Set[Candidate] = {
-        if(o.size <= e.limit) o
+        if (o.size <= e.limit) o
         else o.toSeq.sortBy(_.size).take(e.limit).toSet
-      }
-
-      def warnEmpty(stage: String)(implicit e: ExecCtx): Set[Candidate] = {
-        if (o.isEmpty) {
-          //log(s"$stage No implicits $e")
-        }
-        o
       }
     }
 
@@ -135,9 +125,9 @@ object MGenerator {
         val candidates = Timer.timer("Choose correct functions") {
           ctx.ctx.providers.flatMap(_.fittingFunction(ctx.result)).toSet
         }
-        val fff = {
-          var count = 0
-          for (c <- candidates if count < ctx.limit) yield {
+        var count = 0
+        val fff = for (c <- candidates) yield {
+          if (count < ctx.limit) {
             val argsTrees =
               c.args.map(ctx.withResult)
                 .map(_.decreaseN)
@@ -155,9 +145,9 @@ object MGenerator {
               count += s.size
               s
             }
-          }
+          } else Set.empty
         }
-        fff.flatten.limit.warnEmpty("GF")
+        fff.flatten.limit
       }
     }
 
@@ -185,7 +175,7 @@ object MGenerator {
       lazy val simpleCases = generateFromArgs
       lazy val fromFuncs = generateFromCtxFunctions //Can we generate result from functions from context
       lazy val pairs = generatePair
-      Utils.concatLazy(simpleCases, fromFuncs, pairs).warnEmpty("GN")
+      Utils.concatLazy(simpleCases, fromFuncs, pairs)
     }
 
     def generateFunc(implicit ctx: ExecCtx): Set[Candidate] = {
@@ -196,17 +186,17 @@ object MGenerator {
               case t@Func1Extractor(_, _) => //Result argument is a function
                 generateFunc(
                   ctx.withCtx(c => c.prepend(typeToFuncProvider(t, 0))).withResult(r)
-                ).map(ExprCreate.abstractFunc).limit.warnEmpty("GEF1")
+                ).map(ExprCreate.abstractFunc).limit
               case t => //Result argument is not a function
                 ctx.args match {
                   case e: SingleArg =>
                     generateFunc {
                       ctx.withArgs(ListArgs(argsFromA(t) :: e :: Nil)).withResult(r)
-                    }.map(ExprCreate.abstractValNotH).limit.warnEmpty("GEF2")
+                    }.map(ExprCreate.abstractValNotH).limit
                   case la: ListArgs =>
                     generateFunc {
                       ctx.withArgs(la.prepend(argsFromA(t))).withResult(r)
-                    }.map(ExprCreate.abstractVal).limit.warnEmpty("GEF3")
+                    }.map(ExprCreate.abstractVal).limit
                   case CoproductArgs(_) => sys.error("Coproduct shouldnt be here")
                 }
             }
@@ -266,14 +256,17 @@ object MGenerator {
 
       exprs match {
         case x if x.isEmpty =>
+          log(Timer.printable)
           c.abort(c.enclosingPosition, s"Implicit not found for $ctx")
         case value =>
           val smallestCandidates = value.toSeq.sortBy(_.size).take(ctx.limit)
           log(s"Candidates count: ${value.size}")
 
-          val reified = Timer.timer("Tree gen") {
+          val reified = {
             val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
-            val intermediateValueDefs = deps.map { _.valDef }
+            val intermediateValueDefs = deps.map {
+              _.valDef
+            }
             log(s"Deps: " + deps.map(_.no).mkString("\n"))
             val ss = c.Expr[Seq[MExpr[C, A, T]]](q"Seq(..${smallestCandidates.map(_.term)})")
             val reified = reify {
