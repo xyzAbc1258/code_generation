@@ -1,5 +1,6 @@
 package bshapeless
 
+import bshapeless.exprs.ExprStringBuilder
 import bshapeless.exprs.{Expr => MExpr}
 import shapeless._
 
@@ -25,6 +26,7 @@ object MGenerator {
 
   implicit def fromMacro[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options]: MGenerator[L, N, C, A, T, O] = macro MacroImpl.macroImpl[L, N, C, A, T, O]
 
+  def generateStrings[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options]: Seq[String] = macro MacroImpl.macroImplString[L, N, C, A, T, O]
 
   class MacroImpl(val c: blackbox.Context) extends GeneratorTypes {
 
@@ -153,11 +155,11 @@ object MGenerator {
 
     def generateFromArgs(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.FromArgs) {
       ctx.args match { //Can we take result from arguments
-        case SingleArg(t) if t <:< ctx.result => Set(ExprCreate.fromArgsEq)
+        case SingleArg(t, _) if t <:< ctx.result => Set(ExprCreate.fromArgsEq)
         case a: ListArgs => Timer.timer("m_<:<") {
           a.subTypeIndices(ctx.result).map(ExprCreate.fromArgsSelect).toSet
         }
-        case CoproductArgs(_) => sys.error("Shouldn't be here")
+        case CoproductArgs(_, _) => sys.error("Shouldn't be here")
         case _ => Set.empty
       }
     }
@@ -197,7 +199,7 @@ object MGenerator {
                     generateFunc {
                       ctx.withArgs(la.prepend(argsFromA(t))).withResult(r)
                     }.map(ExprCreate.abstractVal).limit
-                  case CoproductArgs(_) => sys.error("Coproduct shouldnt be here")
+                  case CoproductArgs(_, _) => sys.error("Coproduct shouldnt be here")
                 }
             }
           }
@@ -233,7 +235,7 @@ object MGenerator {
 
     def generateFromCoproduct(implicit ctx: ExecCtx): Set[Candidate] = {
       ctx.args match {
-        case CoproductArgs(t) => Cache.cached(Stage.FromCopro) {
+        case CoproductArgs(t, _) => Cache.cached(Stage.FromCopro) {
           val mapped = t.map(ctx.withArgs).map(generateComposite(_))
           if (mapped.exists(_.isEmpty)) {
             val tt = t.zip(mapped).filter(_._2.isEmpty).map(_._1)
@@ -281,6 +283,44 @@ object MGenerator {
           reified
       }
     }
-  }
 
+    def macroImplString[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
+      val ctx = createContext[L, N, C, A, T, O]
+      val exprs = Timer.timer("Generation")(generateFromCoproduct(ctx))
+
+      exprs match {
+        case x if x.isEmpty =>
+          log(Timer.printable)
+          c.abort(c.enclosingPosition, s"Implicit not found for $ctx")
+        case values => /*
+          val funcNames = ctx.ctx.providers.map(_.idx).distinct.
+            sorted.map(x => s"func_$x").foldRight[HList](HNil)(_ :: _)
+          val argNames = ctx.args match {
+            case SingleArg(_) => "arg"
+            case ListArgs(t, _) =>
+              t.zipWithIndex.map(_._2).sorted
+                .map(x => s"arg_$x").foldRight[HList](HNil)(_ :: _)
+            case CoproductArgs(_) => "arg"
+          } */
+          log(Timer.printable)
+          val hv = ctx.ctx.providers.map(x => x.name -> x.idx)
+            .distinct.sortBy(_._2).map(x => x._1.getOrElse(s"func_${x._2}"))
+            .foldRight[HList](HNil)(_ :: _)
+          val av = ctx.args.name.getOrElse{
+            ctx.args match {
+              case SingleArg(_, _) => "arg"
+              case ListArgs(t, _) =>
+                t.zipWithIndex.map(x => x._1.name.getOrElse(s"arg${x._2}")).foldRight[HList](HNil)(_ :: _)
+              case CoproductArgs(_, _) => "arg"
+            }
+          }
+          val strings = values.map(_.structure)
+            .map(ExprStringBuilder.build)
+            .map(_.build(hv, av))
+            .map(Constant(_)).map(Literal(_))
+
+          q"Seq(..$strings)"
+      }
+    }
+  }
 }

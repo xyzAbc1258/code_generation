@@ -1,5 +1,8 @@
 package bshapeless
 
+import bshapeless.exprs.ExprBuilder
+import bshapeless.exprs.ExprTree
+import bshapeless.exprs.ExprType
 import shapeless.HList
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -12,37 +15,67 @@ trait GeneratorTypes extends CommonUtils {
   import c.universe._
 
   //Lightweight representation of tree structure
-  sealed abstract class StructureTree(val treeName: String)
+  sealed abstract class StructureTree(val treeName: String, val typ: ExprType) extends ExprTree {
+    type ATT = StructureTree
+  }
 
   object StructureTree {
 
-    case class HNilTree(tpe: String) extends StructureTree(s"hnil $tpe")
+    case class HNilTree(tpe: String) extends StructureTree(s"hnil $tpe", ExprType.HNilTree) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildHNil
+    }
 
-    case class HListResult(head: StructureTree, tail: StructureTree) extends StructureTree("hcons")
+    case class HListResult(head: StructureTree, tail: StructureTree) extends StructureTree("hcons", ExprType.HListResult) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildHList(head, tail)
+    }
 
-    case class CNilArg(tpe: String) extends StructureTree(s"cnilArg $tpe")
+    case class CNilArg(tpe: String) extends StructureTree(s"cnilArg $tpe", ExprType.CNilArg) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildCNil
+    }
 
-    case class CoproductArgs(head: StructureTree, tail: StructureTree) extends StructureTree("cconsArg")
+    case class CoproductArgs(head: StructureTree, tail: StructureTree) extends StructureTree("cconsArg", ExprType.CoproductArgs) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildCoproduct(head, tail)
+    }
 
-    case class SelectArgs(n: Int) extends StructureTree(s"selectArg $n")
+    case class SelectArgs(n: Int) extends StructureTree(s"selectArg $n", ExprType.SelectArgs) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildSelectArg(n)
+    }
 
-    case class FromArgsEq(tpe: String) extends StructureTree(s"arg $tpe")
+    case class FromArgsEq(tpe: String) extends StructureTree(s"arg $tpe", ExprType.FromArgsEq) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildFromArg
+    }
 
-    case class SelectCtx(n: Int) extends StructureTree(s"selectCtx $n")
+    case class SelectCtx(n: Int) extends StructureTree(s"selectCtx $n", ExprType.SelectCtx) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildSelectCtx(n)
+    }
 
-    case class Apply(fun: StructureTree, arg: StructureTree) extends StructureTree("apply")
+    case class Apply(fun: StructureTree, arg: StructureTree) extends StructureTree("apply", ExprType.Apply) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildApply(fun, arg)
+    }
 
-    case class ApplyNative(name: String, arg: StructureTree) extends StructureTree(s"native $name")
+    case class ApplyNative(name: String, arg: StructureTree, asMamber: Boolean = false) extends StructureTree(s"native $name", ExprType.ApplyNative) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildApplyNative(name, asMamber, arg)
+    }
 
-    case class Pair(first: StructureTree, second: StructureTree) extends StructureTree("pair")
+    case class Pair(first: StructureTree, second: StructureTree) extends StructureTree("pair", ExprType.Pair) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildPair(first, second)
+    }
 
-    case class AbstractVal(inner: StructureTree) extends StructureTree("abstractVal")
+    case class AbstractVal(inner: StructureTree) extends StructureTree("abstractVal", ExprType.AbstractVal) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractVal(inner)
+    }
 
-    case class AbstractFun(inner: StructureTree) extends StructureTree("abstractFun")
+    case class AbstractFun(inner: StructureTree) extends StructureTree("abstractFun", ExprType.AbstractFun) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractFun(inner)
+    }
 
-    case class InlResult(inner: StructureTree) extends StructureTree("inl")
+    case class InlResult(inner: StructureTree) extends StructureTree("inl", ExprType.InlResult) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildInlResult(inner)
+    }
 
-    case class InrResult(inner: StructureTree) extends StructureTree("inr")
+    case class InrResult(inner: StructureTree) extends StructureTree("inr", ExprType.InrResult) {
+      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildInrResult(inner)
+    }
 
   }
 
@@ -216,16 +249,24 @@ trait GeneratorTypes extends CommonUtils {
   sealed trait Args {
     def wholeType: Type
 
+    def name: Option[Any]
+
     lazy val wholeTypeWrapper: TypeEqualityWrapper = wholeType
   }
 
-  case class SingleArg(wholeType: Type) extends Args
+  case class SingleArg(wholeType: Type, name: Option[Any]) extends Args
 
   case class ListArgs(t: Seq[Args], wholeTypeOpt: Option[Type] = None) extends Args {
     //wholeTypeOpt is an optimization. With "big" types they are often aliased,
     //and use of such aliases make compilation faster.
     //big types repeated many types are a lot of work to refcheck compilation phase
 
+    def name: Option[HList] = {
+      val nn = t.map(_.name)
+      if(nn.forall(_.isDefined)) {
+        Some(nn.map(_.get).foldRight[HList](shapeless.HNil)(_ :: _))
+      } else None
+    }
 
     def prepend(newArgs: Args): ListArgs = {
       ListArgs(newArgs +: t, wholeTypeOpt.map(newArgs.wholeType :::: _))
@@ -233,7 +274,7 @@ trait GeneratorTypes extends CommonUtils {
 
     private val groupBySize = scala.collection.immutable.IntMap.from(
       t.zipWithIndex
-        .collect { case (SingleArg(t), i) => t -> i }
+        .collect { case (SingleArg(t, _), i) => t -> i }
         .groupBy(x => Types.size(x._1))
         .view.mapValues(_.toArray)
     )
@@ -251,11 +292,11 @@ trait GeneratorTypes extends CommonUtils {
       if (ec.noSubtyping)
         groupBySize.getOrElse(Types.size(tpe), Array.empty[(Type, Int)]).filter(_._1 =:= tpe).map(_._2)
       else
-        t.zipWithIndex.collect { case (SingleArg(t), i) if t <:< tpe => i }
+        t.zipWithIndex.collect { case (SingleArg(t, _), i) if t <:< tpe => i }
     }
   }
 
-  case class CoproductArgs(t: Seq[Args]) extends Args {
+  case class CoproductArgs(t: Seq[Args], name: Option[Any]) extends Args {
     lazy val wholeType: c.universe.Type =
       t.map(_.wholeType).foldRight(Types.cnilType) {
         _ +:+: _
@@ -276,9 +317,13 @@ trait GeneratorTypes extends CommonUtils {
     def fittingFunction(expectedResult: Type)(implicit e: ExecCtx): Option[Func]
 
     def wholeType: Type
+
+    def name: Option[String]
+
+    def withName(n: String): FuncProvider
   }
 
-  case class SimpleFuncProvider(f: Func) extends FuncProvider {
+  case class SimpleFuncProvider(f: Func, name: Option[String] = None) extends FuncProvider {
     override def fittingFunction(expectedResult: c.universe.Type)(implicit e: ExecCtx): Option[Func] =
       Some(f).filter(x => if (e.noSubtyping) x.result =:= expectedResult else x.result <:< expectedResult)
 
@@ -289,9 +334,11 @@ trait GeneratorTypes extends CommonUtils {
     override def subIndex: Int = f.subIndex
 
     override def withIndex(n: Int): FuncProvider = copy(f.withIndex(n))
+
+    override def withName(n: String): FuncProvider = copy(name = Some(n))
   }
 
-  case class GenericFuncProvider(wholeType: Type, symbols: Map[Type, Set[Type]], idx: Int, subIndex: Int) extends FuncProvider {
+  case class GenericFuncProvider(wholeType: Type, symbols: Map[Type, Set[Type]], idx: Int, subIndex: Int, name: Option[String] = None) extends FuncProvider {
     private val genType = typeToFunc(wholeType, idx, subIndex).head
 
     private val (poly, polyMap) = toPolyType(wholeType)
@@ -394,6 +441,8 @@ trait GeneratorTypes extends CommonUtils {
     }
 
     override def withIndex(n: Int): FuncProvider = copy(idx = n)
+
+    override def withName(n: String): FuncProvider = copy(name = Some(n))
   }
 
   sealed trait Func extends Indexed[Func] {
@@ -483,12 +532,14 @@ trait GeneratorTypes extends CommonUtils {
 
   def typeToFuncProvider(t: Type, idx: Int, subIndex: Int = 0): List[FuncProvider] = {
     t.dealias match {
+      case LabeledExtractor(v, t) =>
+        typeToFuncProvider(t, idx, subIndex).map(_.withName(v.toString))
       case t@Func1Extractor(_, _) if t.find(_ <:< Types.varType).isDefined =>
         val varSymbols = t.collect.filter(_ <:< Types.varType)
         val basicTypes = varSymbols.filter(x => !(varSymbols - x).exists(y => x <:< y))
         val map = basicTypes.map(x => x -> varSymbols.filter(_ <:< x)).toMap
         List(GenericFuncProvider(t, map, idx, subIndex))
-      case t => typeToFunc(t, idx, subIndex).map(SimpleFuncProvider)
+      case t => typeToFunc(t, idx, subIndex).map(SimpleFuncProvider(_))
     }
   }
 
@@ -511,9 +562,16 @@ trait GeneratorTypes extends CommonUtils {
   }
 
   def argsFromA(a: Type): Args = {
-    if (a <:< Types.coproductType) CoproductArgs(Types.split2ArgsRec(a, Types.cconsType).map(argsFromA))
-    else if (a <:< Types.hlistType) ListArgs(Types.split2ArgsRec(a, Types.hconsType).map(argsFromA), Some(a))
-    else SingleArg(a)
+    a match {
+      case LabeledExtractor(l, a) =>
+        if (a <:< Types.coproductType) CoproductArgs(Types.split2ArgsRec(a, Types.cconsType).map(argsFromA), Some(l))
+        else if (a <:< Types.hlistType) ListArgs(Types.split2ArgsRec(a, Types.hconsType).map(argsFromA), Some(a))
+        else SingleArg(a, Some(l))
+      case a =>
+        if (a <:< Types.coproductType) CoproductArgs(Types.split2ArgsRec(a, Types.cconsType).map(argsFromA), None)
+        else if (a <:< Types.hlistType) ListArgs(Types.split2ArgsRec(a, Types.hconsType).map(argsFromA), Some(a))
+        else SingleArg(a, None)
+    }
   }
 
   case class ContextFunctions(providers: List[FuncProvider], wholeTypeOpt: Option[Type]) {

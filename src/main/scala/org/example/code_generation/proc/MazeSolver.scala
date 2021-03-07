@@ -210,6 +210,10 @@ object MazeSolver {
 
   type Directions1 = right1 :: down1 :: up1 :: left1 ::  HNil
 
+  import shapeless.labelled.FieldType
+
+  type LDirections1 = FieldType["right", right1] :: FieldType["down", down1] :: FieldType["up", up1] :: FieldType["left", left1] :: HNil
+
   type RightDownDirs = right1 :: down1 :: HNil
 
   def main(args: Array[String]): Unit = {
@@ -225,7 +229,7 @@ object MazeSolver {
         ""::""::""::""::""::""::""::""::""::""::""::""::""::HNil))
     }*/
 
-    val res2 = MGenerator.applyL[
+  /*  val res2 = MGenerator.applyL[
     Nat._1,
     M2._61,
       Directions1,//RightDownDirs,//
@@ -237,6 +241,16 @@ object MazeSolver {
       println(e.stringify("right"::"down"::"up"::"left"::HNil,//"right"::"down"::HNil,//"right"::"down"::HNil,//
         HListUtils.toHList(Range(0, 1000).map(_ => "").toList))(null, null))
     }
+*/
+    val res3 = MGenerator.generateStrings[
+      Nat._1,
+      M2._61,
+      LDirections1,//RightDownDirs,//
+      Arr30,//Arr16,//M2.filtered9.Out,//
+      PT[_0, _0] => PT[_29, _29], //PT[_15, _8],
+      NoLoops with NoSubtyping
+    ]
+    res3.foreach(println(_))
   }
 }
 
