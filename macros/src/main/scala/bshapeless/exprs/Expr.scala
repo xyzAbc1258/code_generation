@@ -4,12 +4,14 @@ import bshapeless.{NamedStruct, SelectorWrapper}
 import shapeless._
 import shapeless.ops.hlist.Selector
 import bshapeless.NamedStruct._
+import ExprBuilderGeneric.ExprBuilder
 
 import scala.util.Random
 
 sealed abstract class Expr[Ctx <: HList, A, +R](val typ: ExprType) extends ((Ctx, A) => R) with ExprTree {
 
   override type ATT = Expr[_, _, _]
+  override type W[A] = A
 
   def size: Int
 
@@ -22,7 +24,7 @@ sealed abstract class Expr[Ctx <: HList, A, +R](val typ: ExprType) extends ((Ctx
   def stringify[C1, A1](c: C1, a: A1)(implicit
     e1: NamedStruct.Aux[Ctx, String, C1],
     e2: NamedStruct.Aux[A, String, A1]
-  ): String = ExprStringBuilder.build(this).build(c, a)
+  ): String = new ExprStringBuilder[W].build(this).build(c, a)
 
   def app[IM, R1](e: Expr[Ctx, A, IM])(implicit ev: R <:< (IM => R1)): Expr[Ctx, A, R1] =
     Apply(this.asInstanceOf[Expr[Ctx, A, IM => R1]], e)
@@ -38,7 +40,7 @@ object HNilCreate {
 
     override def size: Int = 1
 
-    def build[R](b: ExprBuilder[ATT, R]): R = b.buildHNil
+    def build[R](b: Builder[R]): R = b.buildHNil
   }
 
   def apply[Ctx <: HList, A]: Expr[Ctx, A, HNil] =
@@ -54,7 +56,7 @@ case class HListResultSplit[Ctx <: HList, A, R1, RR <: HList](
 
   override def size: Int = headExpr.size + tailExpr.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildHList(headExpr, tailExpr)
+  def build[R](b: Builder[R]): R = b.buildHList(headExpr, tailExpr)
 }
 
 object CNilCreate {
@@ -64,7 +66,7 @@ object CNilCreate {
 
     override def size: Int = 1
 
-    def build[R](b: ExprBuilder[ATT, R]): R = b.buildCNil
+    def build[R](b: Builder[R]): R = b.buildCNil
   }
 
   def apply[Ctx <: HList, R]: Expr[Ctx, CNil, R] =
@@ -81,7 +83,7 @@ case class CoproductArgSplit[Ctx <: HList, A, AR <: Coproduct, R](
 
   override def size: Int = inlExpr.size + inrExpr.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildCoproduct(inlExpr, inrExpr)
+  def build[R](b: Builder[R]): R = b.buildCoproduct(inlExpr, inrExpr)
 }
 
 case class FromArgsSelect[Ctx <: HList, A <: HList, R](
@@ -92,7 +94,7 @@ case class FromArgsSelect[Ctx <: HList, A <: HList, R](
 
   override def size: Int = 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildSelectArg(s.index)
+  def build[R](b: Builder[R]): R = b.buildSelectArg(s.index)
 }
 
 object FromArgsSelect {
@@ -108,7 +110,7 @@ case class FromArgsEq[Ctx <: HList, A, R](
 
   override def size: Int = 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildFromArg
+  def build[R](b: Builder[R]): R = b.buildFromArg
 }
 
 object FromArgsEq {
@@ -122,7 +124,7 @@ case class FromCtxSelect[Ctx <: HList, A, R](
 
   override def size: Int = 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildSelectCtx(s.index)
+  def build[R](b: Builder[R]): R = b.buildSelectCtx(s.index)
 }
 
 object FromCtxSelect {
@@ -141,7 +143,7 @@ case class Apply[Ctx <: HList, A, Arg, Res](
 
   override def size: Int = e.size + a.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildApply(e, a)
+  def build[R](b: Builder[R]): R = b.buildApply(e, a)
 }
 
 case class ApplyNative[Ctx <: HList, A, Arg, Res](
@@ -154,7 +156,7 @@ case class ApplyNative[Ctx <: HList, A, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildApplyNative(name, memberFunc, e)
+  def build[R](b: Builder[R]): R = b.buildApplyNative(name, f, memberFunc, e)
 }
 
 case class PairExp[Ctx <: HList, A, L1, L2](
@@ -166,31 +168,31 @@ case class PairExp[Ctx <: HList, A, L1, L2](
   override def apply(v1: Ctx, v2: A): (L1, L2) =
     (e1(v1, v2), e2(v1, v2))
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildPair(e1, e2)
+  def build[R](b: Builder[R]): R = b.buildPair(e1, e2)
 }
 
 case class AbstractVal[Ctx <: HList, A <: HList, Arg, Res](
   e: Expr[Ctx, Arg :: A, Res]
-) extends Expr[Ctx, A, Arg => Res](ExprType.AbstractVal) {
+) extends Expr[Ctx, A, Arg => Res](ExprType.AbstractVal(true)) {
 
   override def apply(v1: Ctx, v2: A): Arg => Res =
     a => e(v1, a :: v2)
 
   override def size: Int = e.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractVal(e)
+  def build[R](b: Builder[R]): R = b.buildAbstractVal(e)
 }
 
 case class AbstractValNotH[Ctx <: HList, A, Arg, Res](
   e: Expr[Ctx, Arg :: A :: HNil, Res]
-) extends Expr[Ctx, A, Arg => Res](ExprType.AbstractVal) {
+) extends Expr[Ctx, A, Arg => Res](ExprType.AbstractVal(false)) {
 
   override def apply(v1: Ctx, v2: A): Arg => Res =
     a => e(v1, a :: v2 :: HNil)
 
   override def size: Int = e.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractVal(e)
+  def build[R](b: Builder[R]): R = b.buildAbstractVal(e)
 }
 
 
@@ -203,7 +205,7 @@ case class AbstractFunc[Ctx <: HList, A, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractFun(e)
+  def build[R](b: Builder[R]): R = b.buildAbstractFun(e)
 }
 
 case class WithMapCtx[Ctx <: HList, NCtx <: HList, Args,R](
@@ -223,7 +225,7 @@ case class WithMapCtx[Ctx <: HList, NCtx <: HList, Args,R](
     case _ => false
   }
 
-  def build[R](b: ExprBuilder[ATT, R]): R = ???
+  def build[R](b: Builder[R]): R = ???
 }
 
 case class InlResultExpr[C <: HList, A, L, R <: Coproduct](
@@ -233,7 +235,7 @@ case class InlResultExpr[C <: HList, A, L, R <: Coproduct](
 
   override def apply(v1: C, v2: A): L :+: R = Inl(e(v1, v2))
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildInlResult(e)
+  def build[R](b: Builder[R]): R = b.buildInlResult(e)
 }
 
 case class InrResultExpr[C <: HList, A, L, R <: Coproduct](
@@ -243,5 +245,5 @@ case class InrResultExpr[C <: HList, A, L, R <: Coproduct](
 
   override def apply(v1: C, v2: A): L :+: R = Inr(e(v1, v2))
 
-  def build[R](b: ExprBuilder[ATT, R]): R = b.buildInrResult(e)
+  def build[R](b: Builder[R]): R = b.buildInrResult(e)
 }

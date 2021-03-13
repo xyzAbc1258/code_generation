@@ -1,10 +1,11 @@
 package bshapeless.exprs
 
 import scala.annotation.unchecked.uncheckedVariance
+import scala.reflect.internal.annotations.uncheckedBounds
 
-trait ExprBuilder[-T <: ExprTree {type ATT <: T@uncheckedVariance} ,R] {
+trait ExprBuilderGeneric[-T <: ExprTree {type ATT <: T@uncheckedVariance} ,R, W[_]] {
 
-  def build(x: T): R = x.build(this)
+  def build(x: T): R = x.build[R](this.asInstanceOf[ExprBuilderGeneric[x.ATT, R, x.W]@uncheckedBounds])
 
   def buildHNil: R
   def buildHList(h: T, t: T): R
@@ -14,7 +15,7 @@ trait ExprBuilder[-T <: ExprTree {type ATT <: T@uncheckedVariance} ,R] {
   def buildFromArg: R
   def buildSelectCtx(n: Int): R
   def buildApply(f: T, a: T): R
-  def buildApplyNative(name: String, memberFunc: Boolean, arg: T): R
+  def buildApplyNative(name: String, func: W[(_) => _], memberFunc: Boolean, arg: T): R
   def buildPair(f: T, s: T): R
   def buildAbstractVal(b: T): R
   def buildAbstractFun(b: T): R
@@ -22,4 +23,7 @@ trait ExprBuilder[-T <: ExprTree {type ATT <: T@uncheckedVariance} ,R] {
   def buildInrResult(a: T): R
 }
 
-trait ExprBuilderAbstract[R] extends ExprBuilder[ExprTree, R]
+object ExprBuilderGeneric {
+  type ExprBuilder[-T <: ExprTree {type ATT <: T@uncheckedVariance} ,R] = ExprBuilderGeneric[T, R, ({type I[A] = A})#I]
+  type ExprBuilderAbstract[R] = ExprBuilder[ExprTree, R]
+}

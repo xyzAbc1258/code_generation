@@ -3,6 +3,8 @@ package bshapeless.exprs
 import shapeless.HList
 import shapeless.HNil
 
+import ExprBuilderGeneric._
+
 import scala.util.Random
 
 trait ContextStringBuilder {
@@ -25,7 +27,7 @@ object ContextStringBuilder {
     from((_, _) => s)
 }
 
-object ExprStringBuilder extends ExprBuilderAbstract[ContextStringBuilder] {
+class ExprStringBuilder[W[_]] extends ExprBuilderGeneric[ExprTree ,ContextStringBuilder, W] {
 
   protected implicit class StringMove(s: String) {
     def move(r: String = "  "): String = {
@@ -49,7 +51,7 @@ object ExprStringBuilder extends ExprBuilderAbstract[ContextStringBuilder] {
     (h, a) => {
       val safeA = a.toString.split(Array('(', ')')).mkString("_")
 
-      val r: ContextStringBuilder =
+      val r: String =
         if (t.typ == ExprType.CNilArg) {
           "case Inr(c: CNil) => c.impossible".move()
         } else {
@@ -93,7 +95,7 @@ object ExprStringBuilder extends ExprBuilderAbstract[ContextStringBuilder] {
   override def buildApply(f: ExprTree, a: ExprTree): ContextStringBuilder =
     for(fs <- build(f); as <- build(a)) yield s"$fs($as)"
 
-  override def buildApplyNative(name: String, memberFunc: Boolean, arg: ExprTree): ContextStringBuilder = {
+  override def buildApplyNative(name: String, f: W[(_) => _], memberFunc: Boolean, arg: ExprTree): ContextStringBuilder = {
     for(as <- build(arg)) yield {
       if(!memberFunc) {
         s"$name($as)"

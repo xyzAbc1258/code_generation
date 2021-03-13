@@ -6,7 +6,10 @@ import shapeless._
 
 import scala.collection.mutable
 import scala.language.experimental.macros
+import scala.reflect.api.Universe
 import scala.reflect.macros.blackbox
+import scala.tools.reflect.ToolBox
+import scala.tools.reflect.mkConsoleFrontEnd
 
 trait Options
 
@@ -28,9 +31,56 @@ object MGenerator {
 
   def generateStrings[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options]: Seq[String] = macro MacroImpl.macroImplString[L, N, C, A, T, O]
 
-  class MacroImpl(val c: blackbox.Context) extends GeneratorTypes {
+  class MacroImpl(val c: blackbox.Context) extends MacroSimplImpl {
+    override type U = c.universe.type
+    override val u = c.universe
 
-    import c.universe._
+    def macroImpl[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
+      macroImplU[L, N, C, A, T, O]
+    }
+
+    def macroImplString[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
+      macroImplStringU[L, N, C, A, T, O]
+    }
+  }
+
+  object RuntimeMacroImpl extends MacroSimplImpl {
+    override type U = scala.reflect.runtime.universe.type
+    lazy val u = scala.reflect.runtime.universe
+    override val c: blackbox.Context = null // not very nice solution...
+
+    lazy val tb = scala.tools.reflect.ToolBox(u.rootMirror).mkToolBox(mkConsoleFrontEnd())
+
+    override def log(msg: String, force: Boolean): Unit = println(s"[Macro log] $msg")
+
+    def macroImpl[
+      L <: Nat : u.WeakTypeTag,
+      N <: Nat : u.WeakTypeTag,
+      C <: HList : u.WeakTypeTag,
+      A: u.WeakTypeTag,
+      T: u.WeakTypeTag,
+      O <: Options : u.WeakTypeTag
+    ]: MGenerator[L,N,C,A,T,O] = buildResult[MGenerator[L,N,C,A,T,O], L, N, C, A, T, O] { case (candidates, _) =>
+      val builder = new ExprTreeBuilder(tb.eval)
+      val mapped = candidates.map(_.structure).map(builder.build).map(_.asInstanceOf[MExpr[C,A,T]])
+      new MGenerator[L,N,C,A,T,O](mapped)
+    }
+
+    def macroImplString[
+      L <: Nat : u.TypeTag,
+      N <: Nat : u.TypeTag,
+      C <: HList : u.TypeTag,
+      A: u.TypeTag,
+      T: u.TypeTag,
+      O <: Options : u.TypeTag
+    ]: Seq[String] = {
+      macroImplBaseStringU[L, N, C, A, T, O]
+    }
+  }
+
+  trait MacroSimplImpl extends GeneratorTypes {
+
+    import u._
 
     object Stage extends Enumeration {
       val FromArgs, FromCtx, FuncApply, PairGen, Normal, FuncGen, GenComposite, FromCopro = Value
@@ -252,75 +302,103 @@ object MGenerator {
       }
     }
 
-    def macroImpl[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
+    protected def buildResult[R,
+      L <: Nat : u.WeakTypeTag,
+      N <: Nat : u.WeakTypeTag,
+      C <: HList : u.WeakTypeTag,
+      A: u.WeakTypeTag,
+      T: u.WeakTypeTag,
+      O <: Options : u.WeakTypeTag](
+      f: (Seq[Candidate], ExecCtx) => R
+    ): R = {
       val ctx = createContext[L, N, C, A, T, O]
       val exprs = Timer.timer("Generation")(generateFromCoproduct(ctx))
 
       exprs match {
         case x if x.isEmpty =>
           log(Timer.printable)
-          c.abort(c.enclosingPosition, s"Implicit not found for $ctx")
+          sys.error(s"Implicit not found for $ctx")
         case value =>
           val smallestCandidates = value.toSeq.sortBy(_.size).take(ctx.limit)
           log(s"Candidates count: ${value.size}")
 
-          val reified = {
-            val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
-            val intermediateValueDefs = deps.map {
-              _.valDef
-            }
-            log(s"Deps: " + deps.map(_.no).mkString("\n"))
-            val ss = c.Expr[Seq[MExpr[C, A, T]]](q"Seq(..${smallestCandidates.map(_.term)})")
-            val reified = reify {
-              new MGenerator[L, N, C, A, T, O](ss.splice)
-            }.tree
-            q"""{
+          f(smallestCandidates, ctx)
+      }
+    }
+
+    protected def macroImplU[
+      L <: Nat : u.WeakTypeTag,
+      N <: Nat : u.WeakTypeTag,
+      C <: HList : u.WeakTypeTag,
+      A: u.WeakTypeTag,
+      T: u.WeakTypeTag,
+      O <: Options : u.WeakTypeTag
+    ]: u.Tree = buildResult[u.Tree, L, N, C, A, T, O] { case (smallestCandidates, _) =>
+      val reified = {
+        val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
+        val intermediateValueDefs = deps.map {
+          _.valDef
+        }
+        log(s"Deps: " + deps.map(_.no).mkString("\n"))
+        val ss = q"Seq(..${smallestCandidates.map(_.term)})"
+        val reified =
+          q"""
+                new MGenerator[
+                    ${TypeTree(weakTypeOf[L])},
+                    ${TypeTree(weakTypeOf[N])},
+                    ${TypeTree(weakTypeOf[C])},
+                    ${TypeTree(weakTypeOf[A])},
+                    ${TypeTree(weakTypeOf[T])},
+                    ${TypeTree(weakTypeOf[O])}]($ss)
+                """
+        q"""{
                   ..$intermediateValueDefs
                   $reified
                }"""
-          }
-          log(Timer.printable)
-          reified
       }
+      log(Timer.printable)
+      reified
     }
 
-    def macroImplString[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
-      val ctx = createContext[L, N, C, A, T, O]
-      val exprs = Timer.timer("Generation")(generateFromCoproduct(ctx))
+    protected def macroImplStringU[
+      L <: Nat : u.WeakTypeTag,
+      N <: Nat : u.WeakTypeTag,
+      C <: HList : u.WeakTypeTag,
+      A: u.WeakTypeTag,
+      T: u.WeakTypeTag,
+      O <: Options : u.WeakTypeTag
+    ]: u.Tree = {
+      val strings = macroImplBaseStringU[L,N,C,A,T,O].map(Constant(_)).map(Literal(_))
+      q"Seq(..$strings)"
+    }
 
-      exprs match {
-        case x if x.isEmpty =>
-          log(Timer.printable)
-          c.abort(c.enclosingPosition, s"Implicit not found for $ctx")
-        case values => /*
-          val funcNames = ctx.ctx.providers.map(_.idx).distinct.
-            sorted.map(x => s"func_$x").foldRight[HList](HNil)(_ :: _)
-          val argNames = ctx.args match {
-            case SingleArg(_) => "arg"
-            case ListArgs(t, _) =>
-              t.zipWithIndex.map(_._2).sorted
-                .map(x => s"arg_$x").foldRight[HList](HNil)(_ :: _)
-            case CoproductArgs(_) => "arg"
-          } */
-          log(Timer.printable)
-          val hv = ctx.ctx.providers.map(x => x.name -> x.idx)
-            .distinct.sortBy(_._2).map(x => x._1.getOrElse(s"func_${x._2}"))
-            .foldRight[HList](HNil)(_ :: _)
-          val av = ctx.args.name.getOrElse{
-            ctx.args match {
-              case SingleArg(_, _) => "arg"
-              case ListArgs(t, _) =>
-                t.zipWithIndex.map(x => x._1.name.getOrElse(s"arg${x._2}")).foldRight[HList](HNil)(_ :: _)
-              case CoproductArgs(_, _) => "arg"
-            }
-          }
-          val strings = values.map(_.structure)
-            .map(ExprStringBuilder.build)
-            .map(_.build(hv, av))
-            .map(Constant(_)).map(Literal(_))
-
-          q"Seq(..$strings)"
+    protected def macroImplBaseStringU[
+      L <: Nat : u.WeakTypeTag,
+      N <: Nat : u.WeakTypeTag,
+      C <: HList : u.WeakTypeTag,
+      A: u.WeakTypeTag,
+      T: u.WeakTypeTag,
+      O <: Options : u.WeakTypeTag
+    ]: Seq[String] = buildResult[Seq[String], L, N, C, A, T, O] { case (values, ctx) =>
+      log(Timer.printable)
+      val hv = ctx.ctx.providers.map(x => x.name -> x.idx)
+        .distinct.sortBy(_._2).map(x => x._1.getOrElse(s"func_${x._2}"))
+        .foldRight[HList](HNil)(_ :: _)
+      val av = ctx.args.name.getOrElse {
+        ctx.args match {
+          case SingleArg(_, _) => "arg"
+          case ListArgs(t, _) =>
+            t.zipWithIndex.map(x => x._1.name.getOrElse(s"arg${x._2}")).foldRight[HList](HNil)(_ :: _)
+          case CoproductArgs(_, _) => "arg"
+        }
       }
+      val stringBuilder = new ExprStringBuilder[({type I[_] = Tree})#I]
+      val strings = values.map(_.structure)
+        .map(stringBuilder.build)
+        .map(_.build(hv, av))
+
+      strings
     }
   }
+
 }

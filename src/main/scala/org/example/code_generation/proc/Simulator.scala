@@ -113,6 +113,41 @@ object Simulator {
   }
 
   def main(args: Array[String]): Unit = {
+    {
+      type RegRetrieve[RegAttr, ResultAttr] = MemoryState => (Int with RegAttr) => (Int with ResultAttr)
+
+      val rrType = Degeneric2[(RegSrc, Result) :: (RegOp1, Operand1) :: (RegOp2, Operand2) :: HNil, RegRetrieve]
+
+      val ss = MGenerator.RuntimeMacroImpl.macroImplString[
+        Nat._1,
+        Nat._5,
+        (MemoryState => ((Int with Result, Int with RegDst)) => (MemoryState with Result)) ::
+          (MemoryState => ((Int with Result, Int with MemDst)) => (MemoryState with Result)) ::
+          (MemoryState => (Int with MemSrc) => (Int with Result)) ::
+          ((MemoryState => (Int with RegSrc) => (Int with Result)
+            ) with (MemoryState => (Int with RegOp1) => (Int with Operand1)
+            ) with (MemoryState => (Int with RegOp2) => (Int with Operand2))) ::
+          ObjectFuncProvider[Load] ::
+          ObjectFuncProvider[Store] ::
+          ObjectFuncProvider[MoveReg] ::
+          ObjectFuncProvider[LoadConst] ::
+          ObjectFuncProvider[OpCommandAbs] ::
+          ObjectFuncProvider[IntOp] ::
+          ObjectFuncProvider[Jmp] ::
+          ObjectFuncProvider[JmpIf] ::
+          ObjectFuncProvider[CmpWhich] ::
+          (ExecutorState => (Int with LineNumber) => (Boolean with Result) => (ExecutorState with Result)) ::
+          ObjectFuncProvider[ExecutorApi] ::
+          HNil,
+        JmpIf :+: Jmp :+: Load :+: LoadConst :+: MoveReg :+: OpCommand :+: Store :+: CNil,
+        ExecutorState => (ExecutorState with Result),
+        Options
+      ]
+
+      println(ss)
+      sys.exit(1)
+    }
+
     val inp = inputSet()
     val state = ExecutorState.empty(inp.toArray, 8)
     val r = gen.apply(state)

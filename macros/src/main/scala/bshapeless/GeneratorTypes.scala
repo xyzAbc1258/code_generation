@@ -1,8 +1,11 @@
 package bshapeless
 
-import bshapeless.exprs.ExprBuilder
+import bshapeless.exprs.CNilCreate.CNilCreate
+import bshapeless.exprs.ExprBuilderGeneric
 import bshapeless.exprs.ExprTree
 import bshapeless.exprs.ExprType
+import bshapeless.exprs.HListResultSplit
+import bshapeless.exprs.HNilCreate
 import shapeless.HList
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -12,69 +15,72 @@ import scala.language.implicitConversions
 
 trait GeneratorTypes extends CommonUtils {
 
-  import c.universe._
+  //import _
 
+  import u._
+  
   //Lightweight representation of tree structure
   sealed abstract class StructureTree(val treeName: String, val typ: ExprType) extends ExprTree {
     type ATT = StructureTree
+    type W[_] = Tree
   }
 
   object StructureTree {
 
     case class HNilTree(tpe: String) extends StructureTree(s"hnil $tpe", ExprType.HNilTree) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildHNil
+      override def build[R](b: Builder[R]): R = b.buildHNil
     }
 
     case class HListResult(head: StructureTree, tail: StructureTree) extends StructureTree("hcons", ExprType.HListResult) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildHList(head, tail)
+      override def build[R](b: Builder[R]): R = b.buildHList(head, tail)
     }
 
     case class CNilArg(tpe: String) extends StructureTree(s"cnilArg $tpe", ExprType.CNilArg) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildCNil
+      override def build[R](b: Builder[R]): R = b.buildCNil
     }
 
     case class CoproductArgs(head: StructureTree, tail: StructureTree) extends StructureTree("cconsArg", ExprType.CoproductArgs) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildCoproduct(head, tail)
+      override def build[R](b: Builder[R]): R = b.buildCoproduct(head, tail)
     }
 
     case class SelectArgs(n: Int) extends StructureTree(s"selectArg $n", ExprType.SelectArgs) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildSelectArg(n)
+      override def build[R](b: Builder[R]): R = b.buildSelectArg(n)
     }
 
     case class FromArgsEq(tpe: String) extends StructureTree(s"arg $tpe", ExprType.FromArgsEq) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildFromArg
+      override def build[R](b: Builder[R]): R = b.buildFromArg
     }
 
     case class SelectCtx(n: Int) extends StructureTree(s"selectCtx $n", ExprType.SelectCtx) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildSelectCtx(n)
+      override def build[R](b: Builder[R]): R = b.buildSelectCtx(n)
     }
 
     case class Apply(fun: StructureTree, arg: StructureTree) extends StructureTree("apply", ExprType.Apply) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildApply(fun, arg)
+      override def build[R](b: Builder[R]): R = b.buildApply(fun, arg)
     }
 
-    case class ApplyNative(name: String, arg: StructureTree, asMamber: Boolean = false) extends StructureTree(s"native $name", ExprType.ApplyNative) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildApplyNative(name, asMamber, arg)
+    case class ApplyNative(name: String, arg: StructureTree, f: AllEqualWrapper[Tree], asMember: Boolean = false) extends StructureTree(s"native $name", ExprType.ApplyNative) {
+      override def build[R](b: Builder[R]): R = b.buildApplyNative(name, f.t, asMember, arg)
     }
 
     case class Pair(first: StructureTree, second: StructureTree) extends StructureTree("pair", ExprType.Pair) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildPair(first, second)
+      override def build[R](b: Builder[R]): R = b.buildPair(first, second)
     }
 
-    case class AbstractVal(inner: StructureTree) extends StructureTree("abstractVal", ExprType.AbstractVal) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractVal(inner)
+    case class AbstractVal(inner: StructureTree, argIsHList: Boolean) extends StructureTree("abstractVal", ExprType.AbstractVal(argIsHList)) {
+      override def build[R](b: Builder[R]): R = b.buildAbstractVal(inner)
     }
 
     case class AbstractFun(inner: StructureTree) extends StructureTree("abstractFun", ExprType.AbstractFun) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildAbstractFun(inner)
+      override def build[R](b: Builder[R]): R = b.buildAbstractFun(inner)
     }
 
     case class InlResult(inner: StructureTree) extends StructureTree("inl", ExprType.InlResult) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildInlResult(inner)
+      override def build[R](b: Builder[R]): R = b.buildInlResult(inner)
     }
 
     case class InrResult(inner: StructureTree) extends StructureTree("inr", ExprType.InrResult) {
-      override def build[R](b: ExprBuilder[ATT, R]): R = b.buildInrResult(inner)
+      override def build[R](b: Builder[R]): R = b.buildInrResult(inner)
     }
 
   }
@@ -135,7 +141,7 @@ trait GeneratorTypes extends CommonUtils {
     def applyNative(exTree: Candidate, fun: Tree, name: String, member: Boolean)(implicit ctx: ExecCtx): Candidate =
       Candidate(
         q"$ns.ApplyNative[$ctxTypeT, $argTypeT, ${TypeTree(exTree.ec.resType)}, $resTypeT]($exTree)($fun, $name, $member)",
-        StructureTree.ApplyNative(name, exTree),
+        StructureTree.ApplyNative(name, exTree, AllEqualWrapper(fun), member),
         exTree
       )
 
@@ -149,14 +155,14 @@ trait GeneratorTypes extends CommonUtils {
     def abstractVal(e: Candidate)(implicit ctx: ExecCtx): Candidate =
       Candidate(
         q"$ns.AbstractVal[$ctxTypeT, $argTypeT, ${ttr(resType.typeArgs.head)}, ${ttr(resType.typeArgs(1))}]($e)",
-        StructureTree.AbstractVal(e),
+        StructureTree.AbstractVal(e, true),
         e
       )
 
 
     def abstractValNotH(e: Candidate)(implicit ctx: ExecCtx): Candidate = Candidate(
       q"$ns.AbstractValNotH[$ctxTypeT, $argTypeT, ${ttr(resType.typeArgs.head)}, ${ttr(resType.typeArgs(1))}]($e)",
-      StructureTree.AbstractVal(e),
+      StructureTree.AbstractVal(e, false),
       e
     )
 
@@ -281,7 +287,7 @@ trait GeneratorTypes extends CommonUtils {
 
     log(s"Arg map sizes: ${groupBySize.view.mapValues(_.length).mkString("\n")}")
 
-    val wholeType: c.universe.Type = wholeTypeOpt getOrElse {
+    val wholeType: Type = wholeTypeOpt getOrElse {
       t.map(_.wholeType).foldRight(Types.hnilType) {
         _ :::: _
       }
@@ -297,7 +303,7 @@ trait GeneratorTypes extends CommonUtils {
   }
 
   case class CoproductArgs(t: Seq[Args], name: Option[Any]) extends Args {
-    lazy val wholeType: c.universe.Type =
+    lazy val wholeType: Type =
       t.map(_.wholeType).foldRight(Types.cnilType) {
         _ +:+: _
       }
@@ -324,10 +330,10 @@ trait GeneratorTypes extends CommonUtils {
   }
 
   case class SimpleFuncProvider(f: Func, name: Option[String] = None) extends FuncProvider {
-    override def fittingFunction(expectedResult: c.universe.Type)(implicit e: ExecCtx): Option[Func] =
+    override def fittingFunction(expectedResult: Type)(implicit e: ExecCtx): Option[Func] =
       Some(f).filter(x => if (e.noSubtyping) x.result =:= expectedResult else x.result <:< expectedResult)
 
-    override def wholeType: c.universe.Type = f.wholeType
+    override def wholeType: Type = f.wholeType
 
     override def idx: Int = f.idx
 
@@ -345,21 +351,16 @@ trait GeneratorTypes extends CommonUtils {
 
     val polyBuilder = toFuncBuilder(polyMap.values.toSet, poly)
 
-    def toPolyType(t: Type): (Type, Map[Type, Symbol]) = {
-      def toSymbol(name: String): Symbol = {
-        val td = TypeDef(Modifiers(Flag.PARAM), TypeName(name), Nil, TypeBoundsTree(EmptyTree, EmptyTree))
-        val td1 = c.typecheck(td)
-        td1.symbol
-      }
+    def toPolyType(t: Type): (Type, Map[Type, Type]) = {
 
-      val toSymbols = symbols.keySet.map(x => x -> toSymbol(x.typeSymbol.name.decodedName.toString))
+      val toSymbols = symbols.keySet.map(x => x -> x)
       val toReplace = toSymbols.flatMap(x => symbols(x._1).map(_ -> x._2))
-      val repl = t.map(x => toReplace.find(_._1 =:= x).map(_._2).map(_.asType.toType).getOrElse(x))
+      val repl = t.map(x => toReplace.find(_._1 =:= x).map(_._2).getOrElse(x))
 
       (repl, toSymbols.toMap)
     }
 
-    def toFuncBuilder(s: Set[Symbol], t: Type): FuncBuilder = {
+    def toFuncBuilder(s: Set[Type], t: Type): FuncBuilder = {
       t match {
         case Func1Extractor(a, r@Func1Extractor(_, _)) =>
           ComplexFuncBuilder(toTypeBuilder(s, a), toFuncBuilder(s, r))
@@ -368,8 +369,8 @@ trait GeneratorTypes extends CommonUtils {
       }
     }
 
-    def toTypeBuilder(s: Set[Symbol], t: Type): TypeBuilder = {
-      val found = s.find(_.asType.toType =:= t)
+    def toTypeBuilder(s: Set[Type], t: Type): TypeBuilder = {
+      val found = s.find(_ =:= t)
       found match {
         case Some(value) => Selector(value)
         case None =>
@@ -380,33 +381,33 @@ trait GeneratorTypes extends CommonUtils {
     }
 
     sealed trait FuncBuilder {
-      def buildFunc(f: Map[Symbol, Type]): Func
+      def buildFunc(f: Map[Type, Type]): Func
     }
 
     case class SimpleFuncBuilder(argBuilder: TypeBuilder, resBuilder: TypeBuilder) extends FuncBuilder {
-      override def buildFunc(f: Map[Symbol, c.universe.Type]): Func =
+      override def buildFunc(f: Map[Type, Type]): Func =
         SimpleFunc1(argBuilder.build(f), resBuilder.build(f), idx, subIndex)
     }
 
     case class ComplexFuncBuilder(argBuilder: TypeBuilder, innerBuilder: FuncBuilder) extends FuncBuilder {
-      override def buildFunc(f: Map[Symbol, c.universe.Type]): Func =
+      override def buildFunc(f: Map[Type, Type]): Func =
         ComplexFunc(argBuilder.build(f), innerBuilder.buildFunc(f), idx, subIndex)
     }
 
     sealed trait TypeBuilder {
-      def build(m: Map[Symbol, Type]): Type
+      def build(m: Map[Type, Type]): Type
     }
 
-    case class Selector(s: Symbol) extends TypeBuilder {
-      override def build(m: Map[Symbol, Type]): Type = m(s)
+    case class Selector(s: Type) extends TypeBuilder {
+      override def build(m: Map[Type, Type]): Type = m(s)
     }
 
     case class ConstType(t: Type) extends TypeBuilder {
-      override def build(m: Map[Symbol, Type]): Type = t
+      override def build(m: Map[Type, Type]): Type = t
     }
 
     case class Apply(tyCon: Type, builders: List[TypeBuilder]) extends TypeBuilder {
-      override def build(m: Map[Symbol, Type]): Type =
+      override def build(m: Map[Type, Type]): Type =
         appliedType(tyCon, builders.map(_.build(m)))
     }
 
@@ -430,7 +431,7 @@ trait GeneratorTypes extends CommonUtils {
     }
 
 
-    override def fittingFunction(expectedResult: c.universe.Type)(implicit e: ExecCtx): Option[Func] = {
+    override def fittingFunction(expectedResult: Type)(implicit e: ExecCtx): Option[Func] = {
       val cand = compareSingle(symbols.keys.toList, Seq((genType.result, expectedResult.dealias)), Map.empty)
       if (cand.size != symbols.size) return None
 
@@ -463,7 +464,7 @@ trait GeneratorTypes extends CommonUtils {
 
     override def withIndex(n: Int): SimpleFunc1 = copy(idx = n)
 
-    override val wholeType: c.universe.Type = arg ==> result
+    override val wholeType: Type = arg ==> result
 
     def apply(funcTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate =
       trees match {
@@ -480,7 +481,7 @@ trait GeneratorTypes extends CommonUtils {
 
     override def withIndex(n: Int): ComplexFunc = copy(inner = inner.withIndex(n), idx = n)
 
-    override val wholeType: c.universe.Type = arg ==> inner.wholeType
+    override val wholeType: Type = arg ==> inner.wholeType
 
     def apply(funcTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate =
       trees match {
@@ -501,9 +502,9 @@ trait GeneratorTypes extends CommonUtils {
       } else None
     }
 
-    override def args: Seq[c.universe.Type] = objType +: inner.map(_.args).getOrElse(Nil)
+    override def args: Seq[Type] = objType +: inner.map(_.args).getOrElse(Nil)
 
-    override def result: c.universe.Type = inner.map(_.result).getOrElse(method.returnType)
+    override def result: Type = inner.map(_.result).getOrElse(method.returnType)
 
     override def subIndex: Int = 0
 
@@ -512,9 +513,11 @@ trait GeneratorTypes extends CommonUtils {
     override def apply(objTree: Candidate, trees: Seq[Candidate])(implicit ctx: ExecCtx): Candidate = {
       val h = trees.head
       if (inner.nonEmpty) {
+        val fTree = q"(x: ${TypeTree(objType)}) => (x.$method):${TypeTree(inner.get.wholeType)}"
+
         val funcTree = ExprCreate.applyNative(
           h,
-          q"(x: ${TypeTree(objType)}) => (x.$method):${TypeTree(inner.get.wholeType)}",
+          fTree,
           method.name.decodedName.toString,
           true
         )(ctx.withResult(inner.get.wholeType))
@@ -599,9 +602,10 @@ trait GeneratorTypes extends CommonUtils {
     val wholeTypeWrapper: TypeEqualityWrapper = wholeType
   }
 
-  def toInt[L <: shapeless.Nat : c.WeakTypeTag]: Int = {
+  def toInt[L <: shapeless.Nat : u.WeakTypeTag]: Int = {
     var t = weakTypeOf[L].dealias
     var i = 0
+    log(s"toInt $t")
     while (t <:< Types.succType) {
       t = t.typeArgs.head.dealias
       i += 1
@@ -615,11 +619,11 @@ trait GeneratorTypes extends CommonUtils {
   }
 
 
-  def createContext[L <: shapeless.Nat : c.WeakTypeTag, N <: shapeless.Nat : c.WeakTypeTag,
-    C <: HList : c.WeakTypeTag,
-    A: c.WeakTypeTag,
-    T: c.WeakTypeTag,
-    O <: Options : c.WeakTypeTag]: ExecCtx = {
+  def createContext[L <: shapeless.Nat : u.WeakTypeTag, N <: shapeless.Nat : u.WeakTypeTag,
+    C <: HList : u.WeakTypeTag,
+    A: u.WeakTypeTag,
+    T: u.WeakTypeTag,
+    O <: Options : u.WeakTypeTag]: ExecCtx = {
     ExecCtx(
       toInt[N],
       funcsFromCtx(weakTypeOf[C]),
@@ -669,7 +673,7 @@ trait GeneratorTypes extends CommonUtils {
   )
 
   object Opts {
-    def apply[O <: Options : c.WeakTypeTag]: Opts = Opts(
+    def apply[O <: Options : u.WeakTypeTag]: Opts = Opts(
       weakTypeOf[O] <:< weakTypeOf[NoLoops],
       weakTypeOf[O] <:< weakTypeOf[NoSubtyping]
     )
@@ -768,10 +772,68 @@ trait GeneratorTypes extends CommonUtils {
     @inline val noLoops: Boolean = options.noLoops
     @inline val noSubtyping: Boolean = options.noSubtyping
 
-    override def resType: c.universe.Type = result
+    override def resType: Type = result
 
     lazy val provider: GenCtxTpeProvider.CustomGenCtxTpeProvider =
       GenCtxTpeProvider.CustomGenCtxTpeProvider(ctx.wholeTypeWrapper, args.wholeTypeWrapper, resultT)
   }
 
+  import bshapeless.exprs.{Expr => MExpr}
+
+  class ExprTreeBuilder(eval: u.Tree => Any) extends ExprBuilderGeneric[StructureTree, MExpr[Nothing, Nothing, Nothing], ({type I[_] = Tree})#I] {
+    import bshapeless.exprs
+
+    implicit def asNothing(e: MExpr[_, _, _]): MExpr[Nothing, Nothing, Nothing] =
+      e.asInstanceOf
+
+    override def buildHNil: MExpr[Nothing, Nothing, Nothing] =
+      exprs.HNilCreate[Nothing, Nothing]
+
+    override def buildHList(h: StructureTree, t: StructureTree): MExpr[Nothing, Nothing, Nothing] = {
+      exprs.HListResultSplit[Nothing, Nothing, Nothing, Nothing](build(h), build(t))
+    }
+
+    override def buildCNil: MExpr[Nothing, Nothing, Nothing] =
+      exprs.CNilCreate[Nothing, Nothing]
+
+    override def buildCoproduct(h: StructureTree, t: StructureTree): MExpr[Nothing, Nothing, Nothing] =
+      exprs.CoproductArgSplit[Nothing, Nothing, Nothing, Nothing](build(h), build(t))
+
+    override def buildSelectArg(n: Int): MExpr[Nothing, Nothing, Nothing] =
+      exprs.FromArgsSelect(n)
+
+    override def buildFromArg: MExpr[Nothing, Nothing, Nothing] =
+      exprs.FromArgsEq[Nothing, Nothing, Nothing](implicitly[Nothing <:< Nothing])
+
+    override def buildSelectCtx(n: Int): MExpr[Nothing, Nothing, Nothing] =
+      exprs.FromCtxSelect(n)
+
+    override def buildApply(f: StructureTree, a: StructureTree): MExpr[Nothing, Nothing, Nothing] =
+      exprs.Apply[Nothing, Nothing, Nothing, Nothing](build(f), build(a))
+
+    override def buildApplyNative(name: String, func: u.Tree, memberFunc: Boolean, arg: StructureTree): MExpr[Nothing, Nothing, Nothing] = {
+      val f: Nothing => Nothing = eval(func).asInstanceOf[Nothing => Nothing]
+      exprs.ApplyNative[Nothing, Nothing, Nothing, Nothing](build(arg))(f, name, memberFunc)
+    }
+
+    override def buildPair(f: StructureTree, s: StructureTree): MExpr[Nothing, Nothing, Nothing] = {
+      exprs.PairExp[Nothing, Nothing, Nothing, Nothing](build(f), build(s))
+    }
+
+    override def buildAbstractVal(b: StructureTree): MExpr[Nothing, Nothing, Nothing] = {
+      if(b.typ.asInstanceOf[ExprType.AbstractVal].argIsHList)
+        exprs.AbstractVal[Nothing, Nothing, Nothing, Nothing](build(b).asInstanceOf)
+      else
+        exprs.AbstractValNotH[Nothing, Nothing, Nothing, Nothing](build(b).asInstanceOf)
+    }
+
+    override def buildAbstractFun(b: StructureTree): MExpr[Nothing, Nothing, Nothing] =
+      exprs.AbstractFunc[Nothing,Nothing,Nothing,Nothing](build(b).asInstanceOf)
+
+    override def buildInlResult(a: StructureTree): MExpr[Nothing, Nothing, Nothing] =
+      exprs.InlResultExpr[Nothing,Nothing,Nothing, Nothing](build(a))
+
+    override def buildInrResult(a: StructureTree): MExpr[Nothing, Nothing, Nothing] =
+      exprs.InrResultExpr[Nothing,Nothing,Nothing,Nothing](build(a))
+  }
 }

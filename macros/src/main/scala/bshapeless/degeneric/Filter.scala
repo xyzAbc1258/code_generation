@@ -17,6 +17,10 @@ object Filter {
   implicit def mkInstance[H1 <: HList, TFs <: HList, T]: Filter[H1,TFs, T] = macro Macro.make[H1,TFs, T]
 
   class Macro(val c: whitebox.Context) extends CommonUtils {
+
+    override type U = c.universe.type
+    override val u: c.universe.type = c.universe
+
     import c.universe._
 
     def make[H1 <: HList : c.WeakTypeTag, TFs <: HList : c.WeakTypeTag, T: c.WeakTypeTag]: c.Tree = {

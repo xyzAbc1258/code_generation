@@ -4,11 +4,13 @@ import scala.annotation.tailrec
 import scala.reflect.macros.blackbox
 
 trait CommonUtils {
+  type U <: scala.reflect.api.Universe
+  val u: U
   val c: blackbox.Context
 
-  import c.universe._
+  import u._
 
-  def log(msg: String, force: Boolean = true): Unit = c.info(c.enclosingPosition, msg, force = force)
+  def log(msg: String, force: Boolean = true): Unit = Option(c).foreach(x => x.info(x.enclosingPosition, msg, force = force))
 
   object Types {
     val objectProviderTpe: Type = weakTypeOf[ObjectFuncProvider[_]]
@@ -58,16 +60,16 @@ trait CommonUtils {
   object Timer extends TimerCollector
 
   implicit class CommonTypeBuilder(a2: Type) {
-    private def apply(tycon: c.universe.Type, args: c.universe.Type*): c.universe.Type = {
+    private def apply(tycon: Type, args: Type*): Type = {
       appliedType(tycon, args.toList)
     }
 
-    private def isSubType(t: c.universe.Type, expected: c.universe.Type): Boolean =
+    private def isSubType(t: Type, expected: Type): Boolean =
       t <:< expected
 
     def ::::(a1: Type): Type = { //Methods ending with colon bind to right eg. t1 :::: t2 == t2.::::(t1)
       assert(isSubType(a2, Types.hlistType), a2)
-      appliedType(Types.hconsType.typeConstructor, a1, a2)
+      apply(Types.hconsType.typeConstructor, a1, a2)
     }
 
     def +:+:(a1: Type): Type = {
@@ -131,5 +133,20 @@ trait CommonUtils {
       val excludedNames = Set("equals", "hashCode", "toString")
       allMethods.filterNot(x => excludedNames(x.name.decodedName.toString)).toList
     }
+  }
+
+  /*Class that doesnt care about content. Useful in case classes to not care about element*/
+  class AllEqualWrapper[T](val t: T) {
+
+    override def hashCode(): Int = 0
+
+    override def equals(o: Any): Boolean = o match {
+      case _ : AllEqualWrapper[T]@unchecked => true
+      case _ => false
+    }
+  }
+
+  object AllEqualWrapper {
+    def apply[T](t: T): AllEqualWrapper[T] = new AllEqualWrapper[T](t)
   }
 }

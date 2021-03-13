@@ -18,7 +18,11 @@ object Degeneric2 {
 
   class Macro(val c: whitebox.Context) extends CommonUtils {
 
+    override type U = c.universe.type
+    override val u: c.universe.type = c.universe
+
     import c.universe._
+
 
     def make[H1 <: HList : c.WeakTypeTag, H2 <: HList : c.WeakTypeTag, F[_, _], Folder <: Fold : c.WeakTypeTag](implicit ft: c.WeakTypeTag[F[_, _]]): c.Tree = {
       val h1Types = Types.split2ArgsRec(weakTypeOf[H1], Types.hconsType)

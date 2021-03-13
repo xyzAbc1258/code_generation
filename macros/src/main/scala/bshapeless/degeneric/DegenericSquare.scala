@@ -48,7 +48,13 @@ object DegenericSquare {
   implicit def mkInstance[H1 <: HList, H2 <: HList, F[_,_], Folder <: Fold]: DegenericSquare[H1,H2,F, Folder] = macro Macro.make[H1,H2,F, Folder]
 
   class Macro(val c: whitebox.Context) extends CommonUtils {
-    import c.universe._
+
+    override type U = c.universe.type
+    override val u: c.universe.type = c.universe
+
+    import u._
+
+    //import c.universe._
 
     def make[H1 <: HList : c.WeakTypeTag, H2 <: HList : c.WeakTypeTag, F[_,_], Folder <: Fold: c.WeakTypeTag](implicit ft: c.WeakTypeTag[F[_,_]]): c.Tree = {
       val h1Types = Types.split2ArgsRec(weakTypeOf[H1], Types.hconsType)

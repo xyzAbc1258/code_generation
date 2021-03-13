@@ -24,7 +24,7 @@ object ExprType {
 
   case object Pair extends ExprType
 
-  case object AbstractVal extends ExprType
+  case class AbstractVal(argIsHList: Boolean) extends ExprType
 
   case object AbstractFun extends ExprType
 
