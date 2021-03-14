@@ -4,9 +4,7 @@ import scala.collection.mutable
 
 class TimerCollector {
 
-  protected var sum: Long = 0
-
-  private val m = mutable.AnyRefMap.empty[String, BigDecimal]
+  private val m = mutable.AnyRefMap.empty[String, Float]
   private val unit = mutable.AnyRefMap.empty[String, String]
 
   private val timeUnit = "μs"
@@ -15,23 +13,22 @@ class TimerCollector {
     val s = System.nanoTime()
     val r = f
     val tL = System.nanoTime() - s
-    val t: BigDecimal = tL
-    sum += tL
-    m.updateWith(key)(_.map(_ + t/1000D).orElse(Some(t/1000D)))
+    val t: Float = tL
+    m.updateWith(key)(_.map(_ + t/1000F).orElse(Some(t/1000F)))
     unit.getOrElseUpdate(key, timeUnit)
     r
   }
 
-  def tick(key: String, value: BigDecimal = 1): Unit = {
+  def tick(key: String, value: Float = 1): Unit = {
     m.updateWith(key)(_.map(_ + value) orElse Some(value))
     unit.getOrElseUpdate(key, "ticks")
   }
 
-  def set(key: String, value: BigDecimal, unitM: String = "times"): Unit = {
+  def set(key: String, value: Float, unitM: String = "times"): Unit = {
     m.update(key, value)
     unit.getOrElseUpdate(key, unitM)
   }
 
 
-  def printable: String = "Timer:\n" + (m.toList.sortBy(_._1).map(s => s"${s._1} - ${s._2} ${unit(s._1)}").mkString("\n"))
+  def printable: String = "Timer:\n" + (m.toList.sortBy(_._1).map(s => f"${s._1} - ${s._2}%1.3f ${unit(s._1)}").mkString("\n"))
 }

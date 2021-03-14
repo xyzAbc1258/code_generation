@@ -1,12 +1,8 @@
 package bshapeless.exprs
 
-import bshapeless.{NamedStruct, SelectorWrapper}
+import bshapeless.NamedStruct
+import bshapeless.SelectorWrapper
 import shapeless._
-import shapeless.ops.hlist.Selector
-import bshapeless.NamedStruct._
-import ExprBuilderGeneric.ExprBuilder
-
-import scala.util.Random
 
 sealed abstract class Expr[Ctx <: HList, A, +R](val typ: ExprType) extends ((Ctx, A) => R) with ExprTree {
 
@@ -180,7 +176,7 @@ case class AbstractVal[Ctx <: HList, A <: HList, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: Builder[R]): R = b.buildAbstractVal(e)
+  def build[R](b: Builder[R]): R = b.buildAbstractVal(e, true)
 }
 
 case class AbstractValNotH[Ctx <: HList, A, Arg, Res](
@@ -192,7 +188,7 @@ case class AbstractValNotH[Ctx <: HList, A, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: Builder[R]): R = b.buildAbstractVal(e)
+  def build[R](b: Builder[R]): R = b.buildAbstractVal(e, false)
 }
 
 

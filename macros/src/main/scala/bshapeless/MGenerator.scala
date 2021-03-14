@@ -35,12 +35,39 @@ object MGenerator {
     override type U = c.universe.type
     override val u = c.universe
 
-    def macroImpl[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
-      macroImplU[L, N, C, A, T, O]
-    }
+    import u._
+
+    def macroImpl[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree =
+      buildResult[u.Tree, L, N, C, A, T, O] { case (smallestCandidates, _) =>
+        val reified = {
+          val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
+          val intermediateValueDefs = deps.map {
+            _.valDef
+          }
+          log(s"Deps: " + deps.map(_.no).mkString("\n"))
+          val ss = q"Seq(..${smallestCandidates.map(_.term)})"
+          val reified =
+            q"""
+                new MGenerator[
+                    ${TypeTree(weakTypeOf[L])},
+                    ${TypeTree(weakTypeOf[N])},
+                    ${TypeTree(weakTypeOf[C])},
+                    ${TypeTree(weakTypeOf[A])},
+                    ${TypeTree(weakTypeOf[T])},
+                    ${TypeTree(weakTypeOf[O])}]($ss)
+                """
+          q"""{
+                  ..$intermediateValueDefs
+                  $reified
+               }"""
+        }
+        log(Timer.printable)
+        reified
+      }
 
     def macroImplString[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
-      macroImplStringU[L, N, C, A, T, O]
+      val strings = macroImplBaseStringU[L, N, C, A, T, O].map(Constant(_)).map(Literal(_))
+      q"Seq(..$strings)"
     }
   }
 
@@ -53,20 +80,20 @@ object MGenerator {
 
     override def log(msg: String, force: Boolean): Unit = println(s"[Macro log] $msg")
 
-    def macroImpl[
+    def generate[
       L <: Nat : u.WeakTypeTag,
       N <: Nat : u.WeakTypeTag,
       C <: HList : u.WeakTypeTag,
       A: u.WeakTypeTag,
       T: u.WeakTypeTag,
       O <: Options : u.WeakTypeTag
-    ]: MGenerator[L,N,C,A,T,O] = buildResult[MGenerator[L,N,C,A,T,O], L, N, C, A, T, O] { case (candidates, _) =>
+    ]: MGenerator[L, N, C, A, T, O] = buildResult[MGenerator[L, N, C, A, T, O], L, N, C, A, T, O] { case (candidates, _) =>
       val builder = new ExprTreeBuilder(tb.eval)
-      val mapped = candidates.map(_.structure).map(builder.build).map(_.asInstanceOf[MExpr[C,A,T]])
-      new MGenerator[L,N,C,A,T,O](mapped)
+      val mapped = candidates.map(_.structure).map(builder.build).map(_.asInstanceOf[MExpr[C, A, T]])
+      new MGenerator[L, N, C, A, T, O](mapped)
     }
 
-    def macroImplString[
+    def generateStrings[
       L <: Nat : u.TypeTag,
       N <: Nat : u.TypeTag,
       C <: HList : u.TypeTag,
@@ -99,7 +126,7 @@ object MGenerator {
 
         val tpeProvider = e.provider
         val shouldCut = Timer.timer("Cut detection") {
-          cutBranches.get(tpeProvider, stage).exists(_ >= e.n)
+          cutBranches.get(tpeProvider, stage).exists(_ >= e.depth)
         }
         if (shouldCut) {
           Timer.tick("Cut!")
@@ -118,24 +145,21 @@ object MGenerator {
         }
         if (breakLoops) {
           Timer.tick("Break")
-          existing
+          return existing
         }
-        else {
-          if (existing.size >= e.limit) {
-            Timer.tick("Used calculated")
-            existing
-          } else {
-            val hash = tpeProvider.hashCode
-            stackHashCodeMap.updateWith(hash)(_ map (e :: _) orElse Some(List(e)))
-            val next = f
-            stackHashCodeMap.updateWith(hash)(_ map (_.tail) filter (_.nonEmpty))
-            if (next.isEmpty)
-              cutBranches.updateWith(tpeProvider, stage)(_ map (_ max e.n) orElse Some(e.n))
-            val newAll = Utils.concat(existing, next)
-            m.update(tpeProvider, newAll)
-            newAll
-          }
+        if (existing.size >= e.limit) {
+          Timer.tick("Used calculated")
+          return existing
         }
+        val hash = tpeProvider.hashCode
+        stackHashCodeMap.updateWith(hash)(_ map (e :: _) orElse Some(List(e)))
+        val next = f
+        stackHashCodeMap.updateWith(hash)(_ map (_.tail) filter (_.nonEmpty))
+        if (next.isEmpty)
+          cutBranches.updateWith(tpeProvider, stage)(_ map (_ max e.depth) orElse Some(e.depth))
+        val newAll = Utils.concat(existing, next)
+        m.update(tpeProvider, newAll)
+        newAll
       }
     }
 
@@ -159,45 +183,45 @@ object MGenerator {
 
       @inline def concat(opts: Set[Candidate]*)(implicit c: ExecCtx): Set[Candidate] = opts.toSet.flatten.limit
 
-      def transpose[A](s: Seq[Set[A]]): Set[Seq[A]] = {
+      def product[A](s: Seq[Set[A]]): Set[Seq[A]] = {
         s match { //Most common cases are resolved without recursion
           case Seq() => Set(Nil)
           case Seq(h) => h.map(Seq(_))
           case Seq(h, t) => for (sh <- h; st <- t) yield Seq(sh, st)
           case Seq(h, t, r) => for (sh <- h; st <- t; sr <- r) yield Seq(sh, st, sr)
-          case h +: t => for (sh <- h; st <- transpose(t)) yield sh +: st
+          case h +: t => for (sh <- h; st <- product(t)) yield sh +: st
         }
       }
+
     }
 
 
     def generateFromCtxFunctions(implicit ctx: ExecCtx): Set[Candidate] = {
-      if (ctx.n == 0) Set.empty
+      if (ctx.depth == 0) Set.empty
       else Cache.cached(Stage.FuncApply) {
         val candidates = Timer.timer("Choose correct functions") {
-          ctx.ctx.providers.flatMap(_.fittingFunction(ctx.result)).toSet
+          ctx.ctx.providers.flatMap(_.fittingFunction(ctx.result, !ctx.noSubtyping)).toSet
         }
         var count = 0
         val fff = for (c <- candidates) yield {
-          if (count < ctx.limit) {
-            val argsTrees =
-              c.args.map(ctx.withResult)
-                .map(_.decreaseN)
-                .foldLeft[List[Set[Candidate]]](Nil) { //Generate till first failure
-                  case (l, t) =>
-                    if (l.headOption.exists(_.isEmpty)) l
-                    else generateFunc(t) :: l
-                }.reverse
+          if (count >= ctx.limit) {
+            Set.empty
+          } else {
+            val argsTrees = c.args.map(ctx.decreaseDepth.withResult)
+              .foldLeft[List[Set[Candidate]]](Nil) { //Generate till first failure
+                case (l, t) if l.headOption.exists(_.isEmpty) => l
+                case (l, t) => generateFunc(t) :: l
+              }.reverse
 
-            if (argsTrees.exists(_.isEmpty)) Set.empty
+            if (argsTrees.headOption.exists(_.isEmpty)) Set.empty
             else {
-              val transposed = Utils.transpose(argsTrees)
+              val argumentLists = Utils.product(argsTrees)
               val funcExpr = ExprCreate.fromCtxSelect(c.idx)(ctx.withResult(c.wholeType))
-              val s = transposed.map(x => c(funcExpr, x))
+              val s = argumentLists.map(argumentList => applyFunc(c)(funcExpr, argumentList))
               count += s.size
               s
             }
-          } else Set.empty
+          }
         }
         fff.flatten.limit
       }
@@ -257,30 +281,34 @@ object MGenerator {
       }
     }
 
-    def generateComposite(implicit ctx: ExecCtx): Set[Candidate] = {
-      if (ctx.result <:< Types.hlistType) Cache.cached(Stage.GenComposite) {
-        val sTypes = Types.split2ArgsRec(ctx.result, Types.hconsType)
-        val options = sTypes.map(ctx.withResult).map(generateComposite(_))
-        if (options.exists(_.isEmpty)) Set.empty
-        else {
-          options.zip(sTypes).foldRight((Set(ExprCreate.hnil), Types.hnilType)) {
-            case ((e, et), (r, rt)) =>
-              (for (e1 <- e; r1 <- r) yield
-                ExprCreate.hList(e1, r1, TypeTree(et), TypeTree(rt))(ctx.withResult(et :::: rt))
-                ).toSeq.sortBy(_.size).take(ctx.limit).toSet -> (et :::: rt)
-          }._1
-        }
-      } else if (ctx.result <:< Types.cconsType) Cache.cached(Stage.GenComposite) {
-        val a1 = ctx.result.typeArgs.head
-        val rest = ctx.result.typeArgs(1)
-        val a1Trees = generateComposite(ctx.withResult(a1))
-        val restTrees = if (rest <:< Types.cnilType) Set.empty else generateComposite(ctx.withResult(rest))
-        val a1TreesInl = a1Trees.map(ExprCreate.inlResult(_))
-        val restTreesInr = restTrees.map(ExprCreate.inrResult(_))
-        Utils.concat(a1TreesInl, restTreesInr)
-      } else {
-        generateFunc
+    def generateCompositeHList(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.GenComposite) {
+      val sTypes = Types.split2ArgsRec(ctx.result, Types.hconsType)
+      val options = sTypes.map(ctx.withResult).map(generateComposite(_))
+      if (options.exists(_.isEmpty)) Set.empty
+      else {
+        options.zip(sTypes).foldRight((Set(ExprCreate.hnil), Types.hnilType)) {
+          case ((e, et), (r, rt)) =>
+            (for (e1 <- e; r1 <- r) yield
+              ExprCreate.hList(e1, r1, TypeTree(et), TypeTree(rt))(ctx.withResult(et :::: rt))
+              ).toSeq.sortBy(_.size).take(ctx.limit).toSet -> (et :::: rt)
+        }._1
       }
+    }
+
+    def generateCompositeCoproduct(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.GenComposite) {
+      val a1 = ctx.result.typeArgs.head
+      val rest = ctx.result.typeArgs(1)
+      val a1Trees = generateComposite(ctx.withResult(a1))
+      val restTrees = if (rest <:< Types.cnilType) Set.empty else generateComposite(ctx.withResult(rest))
+      val a1TreesInl = a1Trees.map(ExprCreate.inlResult(_))
+      val restTreesInr = restTrees.map(ExprCreate.inrResult(_))
+      Utils.concat(a1TreesInl, restTreesInr)
+    }
+
+    def generateComposite(implicit ctx: ExecCtx): Set[Candidate] = {
+      if (ctx.result <:< Types.hlistType) generateCompositeHList
+      else if (ctx.result <:< Types.cconsType) generateCompositeCoproduct
+      else generateFunc
     }
 
     def generateFromCoproduct(implicit ctx: ExecCtx): Set[Candidate] = {
@@ -324,52 +352,6 @@ object MGenerator {
 
           f(smallestCandidates, ctx)
       }
-    }
-
-    protected def macroImplU[
-      L <: Nat : u.WeakTypeTag,
-      N <: Nat : u.WeakTypeTag,
-      C <: HList : u.WeakTypeTag,
-      A: u.WeakTypeTag,
-      T: u.WeakTypeTag,
-      O <: Options : u.WeakTypeTag
-    ]: u.Tree = buildResult[u.Tree, L, N, C, A, T, O] { case (smallestCandidates, _) =>
-      val reified = {
-        val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
-        val intermediateValueDefs = deps.map {
-          _.valDef
-        }
-        log(s"Deps: " + deps.map(_.no).mkString("\n"))
-        val ss = q"Seq(..${smallestCandidates.map(_.term)})"
-        val reified =
-          q"""
-                new MGenerator[
-                    ${TypeTree(weakTypeOf[L])},
-                    ${TypeTree(weakTypeOf[N])},
-                    ${TypeTree(weakTypeOf[C])},
-                    ${TypeTree(weakTypeOf[A])},
-                    ${TypeTree(weakTypeOf[T])},
-                    ${TypeTree(weakTypeOf[O])}]($ss)
-                """
-        q"""{
-                  ..$intermediateValueDefs
-                  $reified
-               }"""
-      }
-      log(Timer.printable)
-      reified
-    }
-
-    protected def macroImplStringU[
-      L <: Nat : u.WeakTypeTag,
-      N <: Nat : u.WeakTypeTag,
-      C <: HList : u.WeakTypeTag,
-      A: u.WeakTypeTag,
-      T: u.WeakTypeTag,
-      O <: Options : u.WeakTypeTag
-    ]: u.Tree = {
-      val strings = macroImplBaseStringU[L,N,C,A,T,O].map(Constant(_)).map(Literal(_))
-      q"Seq(..$strings)"
     }
 
     protected def macroImplBaseStringU[

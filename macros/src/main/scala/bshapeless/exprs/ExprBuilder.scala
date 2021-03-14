@@ -17,7 +17,7 @@ trait ExprBuilderGeneric[-T <: ExprTree {type ATT <: T@uncheckedVariance} ,R, W[
   def buildApply(f: T, a: T): R
   def buildApplyNative(name: String, func: W[(_) => _], memberFunc: Boolean, arg: T): R
   def buildPair(f: T, s: T): R
-  def buildAbstractVal(b: T): R
+  def buildAbstractVal(b: T, argsIsHList: Boolean): R
   def buildAbstractFun(b: T): R
   def buildInlResult(a: T): R
   def buildInrResult(a: T): R

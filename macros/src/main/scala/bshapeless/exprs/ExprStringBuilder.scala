@@ -108,7 +108,7 @@ class ExprStringBuilder[W[_]] extends ExprBuilderGeneric[ExprTree ,ContextString
     for(fs <- build(f); ss <- build(s)) yield s"($fs, $ss)"
   }
 
-  override def buildAbstractVal(b: ExprTree): ContextStringBuilder = (h,a) => {
+  override def buildAbstractVal(b: ExprTree, isArgHList: Boolean): ContextStringBuilder = (h,a) => {
     a match {
       case a: HList =>
         val name = "a" + a.asInstanceOf[HList].runtimeLength

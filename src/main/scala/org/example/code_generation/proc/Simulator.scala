@@ -118,7 +118,7 @@ object Simulator {
 
       val rrType = Degeneric2[(RegSrc, Result) :: (RegOp1, Operand1) :: (RegOp2, Operand2) :: HNil, RegRetrieve]
 
-      val ss = MGenerator.RuntimeMacroImpl.macroImplString[
+      val ss = MGenerator.RuntimeMacroImpl.generateStrings[
         Nat._1,
         Nat._5,
         (MemoryState => ((Int with Result, Int with RegDst)) => (MemoryState with Result)) ::

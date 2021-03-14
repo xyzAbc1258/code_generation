@@ -242,7 +242,7 @@ object MazeSolver {
         HListUtils.toHList(Range(0, 1000).map(_ => "").toList))(null, null))
     }
 */
-    val res3 = MGenerator.generateStrings[
+    val res3 = MGenerator.RuntimeMacroImpl.generateStrings[
       Nat._1,
       M2._61,
       LDirections1,//RightDownDirs,//
