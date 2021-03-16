@@ -351,7 +351,7 @@ trait GeneratorTypes extends FunctionProviders {
   }
 
 
-  def typeToFuncProvider(t: Type, idx: Int, subIndex: Int = 0): List[FuncProvider] = {
+  def typeToFuncProvider(t: Type, idx: Int, subIndex: Int = 0): Seq[FuncProvider] = {
     t.dealias match {
       case LabeledExtractor(v, t) =>
         typeToFuncProvider(t, idx, subIndex).map(_.withName(v.toString))
@@ -359,7 +359,7 @@ trait GeneratorTypes extends FunctionProviders {
         val varSymbols = t.collect.filter(_ <:< Types.varType)
         val basicTypes = varSymbols.filter(x => !(varSymbols - x).exists(y => x <:< y))
         val map = basicTypes.map(x => x -> varSymbols.filter(_ <:< x)).toMap
-        List(GenericFuncProvider(t, map, idx, subIndex))
+        Seq(GenericFuncProvider(t, map, idx, subIndex))
       case t => typeToFunc(t, idx, subIndex).map(SimpleFuncProvider(_))
     }
   }
@@ -377,19 +377,19 @@ trait GeneratorTypes extends FunctionProviders {
     }
   }
 
-  case class ContextFunctions(providers: List[FuncProvider], wholeTypeOpt: Option[Type]) {
+  case class ContextFunctions(providers: Array[FuncProvider], wholeTypeOpt: Option[Type]) {
     @inline
-    private def intersect(t: List[Type]): Type = {
+    private def intersect(t: Seq[Type]): Type = {
       t match {
-        case List(t) => t
+        case Seq(t) => t
         case l if l.head.isInstanceOf[ObjectFunc] => l.head.asInstanceOf[ObjectFunc].objType
-        case l => internal.intersectionType(l)
+        case l => internal.intersectionType(l.toList)
       }
     }
 
-    def prepend(newProvider: List[FuncProvider]): ContextFunctions = {
+    def prepend(newProvider: Seq[FuncProvider]): ContextFunctions = {
       ContextFunctions(
-        newProvider ++ providers.map(_.incIdx()),
+        newProvider ++: providers.map(_.incIdx()),
         wholeTypeOpt.map(intersect(newProvider.map(_.wholeType)) :::: _)
       )
     }
@@ -417,7 +417,7 @@ trait GeneratorTypes extends FunctionProviders {
 
   def funcsFromCtx(t: Type): ContextFunctions = {
     val types = Types.split2ArgsRec(t, Types.hconsType)
-    ContextFunctions(types.zipWithIndex.flatMap((typeToFuncProvider(_: Type, _: Int)).tupled), Some(t))
+    ContextFunctions(types.zipWithIndex.flatMap((typeToFuncProvider(_: Type, _: Int)).tupled).toArray, Some(t))
   }
 
 
@@ -450,6 +450,7 @@ trait GeneratorTypes extends FunctionProviders {
   }
 
   object TypeEqualityWrapper {
+
     private val cache = mutable.AnyRefMap.empty[Type, TypeEqualityWrapper]
 
     //Attempt to catch referencial equality.
@@ -510,18 +511,15 @@ trait GeneratorTypes extends FunctionProviders {
 
     object CustomGenCtxTpeProvider {
       type T3 = (TypeEqualityWrapper, TypeEqualityWrapper, TypeEqualityWrapper)
-      private val cache = mutable.LongMap.empty[mutable.AnyRefMap[T3, CustomGenCtxTpeProvider]]
+      private val cache = mutable.AnyRefMap.empty[T3, CustomGenCtxTpeProvider]
 
       //Again referential equality
       //Size seems to be the best heuristic to catch different types
       def apply(ctx: TypeEqualityWrapper, arg: TypeEqualityWrapper, res: TypeEqualityWrapper): CustomGenCtxTpeProvider = {
         Timer.timer("CGCTP time") {
           Timer.tick("CGCTP count")
-          Timer.set("CGCTP size", cache.values.map(_.size).sum)
-          val hash = (ctx.size << 20) | (arg.size << 10) | res.size
-          cache
-            .getOrElseUpdate(hash, mutable.AnyRefMap.empty)
-            .getOrElseUpdate((ctx, arg, res), new CustomGenCtxTpeProvider(ctx, arg, res))
+          Timer.set("CGCTP size", cache.size)
+          cache.getOrElseUpdate((ctx, arg, res), new CustomGenCtxTpeProvider(ctx, arg, res))
         }
       }
     }
@@ -550,8 +548,8 @@ trait GeneratorTypes extends FunctionProviders {
 
     def zeroed: ExecCtx = copy(depth = 0)
 
-    def decreaseDepth: ExecCtx = {
-      if (depth > 0) withDepth(depth - 1)
+    def decreaseDepthWithResult(newResult: Type): ExecCtx = {
+      if (depth > 0) copy(depth = depth - 1, resultT = newResult.dealias.map(_.dealias))
       else sys.error(s"Cannot decrease $depth")
     }
 
@@ -561,9 +559,9 @@ trait GeneratorTypes extends FunctionProviders {
 
     def withArgs(t: Args): ExecCtx = copy(args = t)
 
-    def withResult(t: Type): ExecCtx = copy(resultT = t.dealias.map(_.dealias))
+    def withResult(t: Type): ExecCtx = copy(resultT = t.dealias)
 
-    override val hashCode: Int = super.hashCode()
+    override lazy val hashCode: Int = super.hashCode()
 
     def ctxType: Type = ctx.wholeType
 

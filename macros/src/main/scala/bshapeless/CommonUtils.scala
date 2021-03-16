@@ -30,10 +30,8 @@ trait CommonUtils {
     }
 
     def unapply(x: Type): Option[(Type, Type)] = {
-      if (isFunc1(x)) Some((x.dealias.typeArgs.head, x.dealias.typeArgs(1)))
-      else {
-        None
-      }
+      if (isFunc1(x)) Some((x.dealias.firstTypeArg, x.dealias.secondTypeArg))
+      else None
     }
   }
 
@@ -57,7 +55,7 @@ trait CommonUtils {
 
   }
 
-  def userMethods(tpe: Type): List[MethodSymbol] = {
+  def userMethods(tpe: Type): Seq[MethodSymbol] = {
     val allMethods = tpe.decls.collect {
       case x: MethodSymbol if !x.isConstructor && x.isPublic => x
     }
@@ -68,7 +66,7 @@ trait CommonUtils {
       woCopy.toList
     } else {
       val excludedNames = Set("equals", "hashCode", "toString")
-      allMethods.filterNot(x => excludedNames(x.name.decodedName.toString)).toList
+      allMethods.filterNot(x => excludedNames(x.name.decodedName.toString)).toSeq
     }
   }
 

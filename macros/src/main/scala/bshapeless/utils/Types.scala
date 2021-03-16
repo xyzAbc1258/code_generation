@@ -28,9 +28,9 @@ class Types[U <: Universe with Singleton](val u: U) {
 
   val varType: Type = weakTypeOf[Var]
 
-  def split2ArgsRec(t: Type, connectType: Type): List[Type] = {
+  def split2ArgsRec(t: Type, connectType: Type): Seq[Type] = {
     var tt = t.dealias
-    var s = List[Type]()
+    var s = Seq[Type]()
     while (tt <:< connectType) {
       s = tt.typeArgs.head +: s
       tt = tt.typeArgs(1).dealias
@@ -39,27 +39,28 @@ class Types[U <: Universe with Singleton](val u: U) {
   }
 
   def size(t: Type): Int = {
-    sizer(t)
+    sizer(t.dealias)
   }
 
   def hash(t: Type): Int = {
     @tailrec
     def inner(it: Seq[Type], c: Int): Int =
       it match {
-        case Seq() => c
         case h +: t =>
-          inner(h.typeArgs ++ t, c * 41 + h.typeConstructor.typeSymbol.name.decodedName.toString.hashCode)
+          inner(h.typeArgs.map(_.dealias) ++: t, c * 41 +
+            h.typeConstructor.dealias.typeSymbol.name.decodedName.toString.hashCode)
+        case Seq() => c
       }
-    inner(Seq(t), 0)
+    inner(Seq(t.dealias), 0)
   }
 
   @tailrec
-  private final def sizer(t: Type, r: Seq[Type] = Nil, im: Int = 0): Int = {
+  private final def sizer(t: Type, r: Seq[Type] = Seq(), im: Int = 0): Int = {
     if (t.typeArgs.nonEmpty) {
-      sizer(t.typeArgs.head.dealias, t.typeArgs.tail ++ r, im + 1)
+      sizer(t.typeArgs.head.dealias, t.typeArgs.tail.map(_.dealias) ++: r, im + 1)
     } else {
       if (r.isEmpty) im + 1
-      else sizer(r.head.dealias, r.tail, im + 1)
+      else sizer(r.head, r.tail, im + 1)
     }
   }
 }

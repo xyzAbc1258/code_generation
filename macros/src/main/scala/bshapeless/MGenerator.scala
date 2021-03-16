@@ -73,10 +73,10 @@ object MGenerator {
 
   object RuntimeMacroImpl extends MacroSimplImpl {
     override type U = scala.reflect.runtime.universe.type
-    lazy val u = scala.reflect.runtime.universe
+    val u = scala.reflect.runtime.universe
     override val c: blackbox.Context = null // not very nice solution...
 
-    lazy val tb = scala.tools.reflect.ToolBox(u.rootMirror).mkToolBox(mkConsoleFrontEnd())
+    val tb = scala.tools.reflect.ToolBox(u.rootMirror).mkToolBox(mkConsoleFrontEnd())
 
     override def log(msg: String, force: Boolean): Unit = println(s"[Macro log] $msg")
 
@@ -119,7 +119,7 @@ object MGenerator {
 
       private val m: mutable.AnyRefMap[GenCtxTpeProvider, Set[Candidate]] = mutable.AnyRefMap.empty
 
-      private val stackHashCodeMap: mutable.LongMap[List[ExecCtx]] = mutable.LongMap.empty
+      private val stackHashCodeMap: mutable.LongMap[Seq[ExecCtx]] = mutable.LongMap.empty
 
       def cached(stage: Stage.Value)(f: => Set[Candidate])(implicit e: ExecCtx): Set[Candidate] = {
         Timer.tick("cached - entry")
@@ -152,7 +152,7 @@ object MGenerator {
           return existing
         }
         val hash = tpeProvider.hashCode
-        stackHashCodeMap.updateWith(hash)(_ map (e :: _) orElse Some(List(e)))
+        stackHashCodeMap.updateWith(hash)(_ map (e +: _) orElse Some(Seq(e)))
         val next = f
         stackHashCodeMap.updateWith(hash)(_ map (_.tail) filter (_.nonEmpty))
         if (next.isEmpty)
@@ -207,10 +207,10 @@ object MGenerator {
           if (count >= ctx.limit) {
             Set.empty
           } else {
-            val argsTrees = c.args.map(ctx.decreaseDepth.withResult)
-              .foldLeft[List[Set[Candidate]]](Nil) { //Generate till first failure
+            val argsTrees = c.args.map(ctx.decreaseDepthWithResult)
+              .foldLeft[Seq[Set[Candidate]]](Seq.empty) { //Generate till first failure
                 case (l, t) if l.headOption.exists(_.isEmpty) => l
-                case (l, t) => generateFunc(t) :: l
+                case (l, t) => generateFunc(t) +: l
               }.reverse
 
             if (argsTrees.headOption.exists(_.isEmpty)) Set.empty
@@ -240,9 +240,9 @@ object MGenerator {
 
     def generatePair(implicit ctx: ExecCtx): Set[Candidate] = {
       if (ctx.result <:< Types.pairType) Cache.cached(Stage.PairGen) { //Is result a pair ?
-        val e1 = generateNormal(ctx.withResult(ctx.result.typeArgs.head))
+        val e1 = generateNormal(ctx.withResult(ctx.result.firstTypeArg))
         if (e1.isEmpty) return Set.empty
-        val e2 = generateNormal(ctx.withResult(ctx.result.typeArgs(1)))
+        val e2 = generateNormal(ctx.withResult(ctx.result.secondTypeArg))
         (for (e1t <- e1; e2t <- e2) yield ExprCreate.pair(e1t, e2t)).limit
       } else Set.empty
     }
@@ -296,8 +296,8 @@ object MGenerator {
     }
 
     def generateCompositeCoproduct(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.GenComposite) {
-      val a1 = ctx.result.typeArgs.head
-      val rest = ctx.result.typeArgs(1)
+      val a1 = ctx.result.firstTypeArg
+      val rest = ctx.result.secondTypeArg
       val a1Trees = generateComposite(ctx.withResult(a1))
       val restTrees = if (rest <:< Types.cnilType) Set.empty else generateComposite(ctx.withResult(rest))
       val a1TreesInl = a1Trees.map(ExprCreate.inlResult(_))

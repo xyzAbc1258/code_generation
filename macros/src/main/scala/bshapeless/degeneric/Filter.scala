@@ -41,7 +41,7 @@ object Filter {
           case Nil => (end, trees.reverse)
         }
       }
-      val (outType, irs) = partFold(filtered.grouped(10).toList, Types.hnilType, Nil)
+      val (outType, irs) = partFold(filtered.grouped(10).map(_.toList).toList, Types.hnilType, Nil)
       q"""{
             type T1 = ${TypeTree(weakTypeOf[H1])}
             type T2 = ${TypeTree(weakTypeOf[TFs])}

@@ -67,14 +67,14 @@ trait FunctionProviders extends CommonUtils {
 
   }
 
-  def typeToFunc(t: Type, idx: Int, subIndex: Int = 0): List[Func] = {
+  def typeToFunc(t: Type, idx: Int, subIndex: Int = 0): Seq[Func] = {
     t.dealias match {
       case Func1Extractor(arg, r@Func1Extractor(_, _)) =>
-        List(ComplexFunc(arg, typeToFunc(r, idx).head, idx, subIndex))
+        Seq(ComplexFunc(arg, typeToFunc(r, idx).head, idx, subIndex))
       case Func1Extractor(arg, t) =>
-        List(SimpleFunc1(arg, t, idx, subIndex))
+        Seq(SimpleFunc1(arg, t, idx, subIndex))
       case RefinedType(inner, _) =>
-        inner.zipWithIndex.flatMap { case (t, i) => typeToFunc(t, idx, i) }
+        inner.toArray.zipWithIndex.flatMap { case (t, i) => typeToFunc(t, idx, i) }
       case t if t <:< Types.objectProviderTpe =>
         val tpe = t.firstTypeArg
         val methods = userMethods(tpe)
@@ -185,7 +185,7 @@ trait FunctionProviders extends CommonUtils {
           val pta = pt.typeArgs
           val ea = e.typeArgs
           if (pta.nonEmpty && ea.nonEmpty) {
-            if (pt.typeConstructor =:= e.typeConstructor) compareSingle(s, pta.zip(ea) ++: t, cm)
+            if (pt.typeConstructor =:= e.typeConstructor) compareSingle(s, pta.map(_.dealias).zip(ea.map(_.dealias)) ++: t, cm)
             else compareSingle(s, t, cm)
           } else {
             val cn = s.filter(pt <:< _).map(_ -> e)
@@ -198,7 +198,7 @@ trait FunctionProviders extends CommonUtils {
 
 
     override def fittingFunction(expectedResult: Type, withSubtyping: Boolean): Option[Func] = {
-      val cand = compareSingle(symbols.keys.toList, Seq((genType.result, expectedResult.dealias)), Map.empty)
+      val cand = compareSingle(symbols.keys.toList, Seq((genType.result.dealias, expectedResult.dealias)), Map.empty)
       if (cand.size != symbols.size) return None
 
       val m = cand.map(x => polyMap(x._1) -> x._2)

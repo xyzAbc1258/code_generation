@@ -67,7 +67,7 @@ object Degeneric2 {
       val (outType, trees) = finalTypes match {
         case immutable.::(_, _) =>
           val end = appliedType(single, finalTypes.last)
-          foldTypes(finalTypes.init.grouped(20).toList, end, Nil)
+          foldTypes(finalTypes.init.grouped(20).map(_.toList).toList, end, Nil)
         case Nil => (zeroT, Nil)
       }
       q"""
