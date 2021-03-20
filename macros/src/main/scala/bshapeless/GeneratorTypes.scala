@@ -9,7 +9,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.language.implicitConversions
-import scala.util.hashing.MurmurHash3
 
 trait GeneratorTypes extends FunctionProviders {
 
@@ -189,11 +188,7 @@ trait GeneratorTypes extends FunctionProviders {
 
     def inlResult(e: Candidate)(implicit ctx: ExecCtx): Candidate = {
       Candidate(
-        q"$ns.InlResultExpr[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${
-          ttr {
-            resType.secondTypeArg
-          }
-        }]($e)",
+        q"$ns.InlResultExpr[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${ttr(resType.secondTypeArg)}]($e)",
         StructureTree.InlResult(e),
         e
       )
@@ -201,13 +196,10 @@ trait GeneratorTypes extends FunctionProviders {
 
     def inrResult(e: Candidate)(implicit ctx: ExecCtx): Candidate = {
       Candidate(
-        q"$ns.InrResultExpr[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${
-          ttr {
-            resType.secondTypeArg
-          }
-        }]($e)",
+        q"$ns.InrResultExpr[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${ttr(resType.secondTypeArg)}]($e)",
         StructureTree.InrResult(e),
-        e)
+        e
+      )
     }
   }
 
@@ -297,8 +289,6 @@ trait GeneratorTypes extends FunctionProviders {
         .view.mapValues(_.toArray)
     )
 
-    log(s"Arg map sizes: ${groupBySize.view.mapValues(_.length).mkString("\n")}")
-
     val wholeType: Type = wholeTypeOpt getOrElse {
       t.map(_.wholeType).foldRight(Types.hnilType) {
         _ :::: _
@@ -331,22 +321,17 @@ trait GeneratorTypes extends FunctionProviders {
           funcTree, hArg, TypeTree(s.arg), s.inner.wholeTypeTree
         )(ctx.withResult(s.inner.wholeType))
         applyFunc(s.inner)(partialApp, tailArgs)
-      case (s: ObjectFunc, objectTree +: tailArgs) if s.inner.isDefined => //FuncTree isnt necessary here since its ObjectFuncProvider only, not any real value
-        val funTree = q"(x: ${TypeTree(s.objType)}) => (x.${s.method}):${TypeTree(s.inner.get.wholeType)}"
+      case (s: ObjectFunc, objectTree +: tailArgs) => //funcTree isnt necessary here since its ObjectFuncProvider only, not any real value
         val funcTree = ExprCreate.applyNative(
           objectTree,
-          fun = funTree,
+          fun = q"(x: ${TypeTree(s.objType)}) => (x.${s.method}):${TypeTree(s.resultFuncType)}",
           name = s.method.name.decodedName.toString,
           member = true
-        )(ctx.withResult(s.inner.get.wholeType))
-        applyFunc(s.inner.get)(funcTree, tailArgs)
-      case (s: ObjectFunc, Seq(objectTree)) if s.inner.isEmpty =>
-        ExprCreate.applyNative(
-          objectTree,
-          fun = q"(x: ${TypeTree(s.objType)}) => x.${s.method}",
-          name = s.method.name.decodedName.toString,
-          member = true
-        )(ctx.withResult(s.result))
+        )(ctx.withResult(s.resultFuncType))
+        s.inner match {
+          case Some(inner) => applyFunc(inner)(funcTree, tailArgs)
+          case None => funcTree.ensuring(tailArgs.isEmpty)
+        }
     }
   }
 
@@ -360,6 +345,13 @@ trait GeneratorTypes extends FunctionProviders {
         val basicTypes = varSymbols.filter(x => !(varSymbols - x).exists(y => x <:< y))
         val map = basicTypes.map(x => x -> varSymbols.filter(_ <:< x)).toMap
         Seq(GenericFuncProvider(t, map, idx, subIndex))
+      case t if t <:< Types.objectProviderTpe =>
+        val tpe = t.firstTypeArg
+        val methods = userMethods(tpe)
+        methods.map(x =>
+          if (x.typeParams.nonEmpty) GenericFuncProvider(ObjectPolyFunc(t, tpe, x, idx, subIndex), None)
+          else SimpleFuncProvider(ObjectFunc(t, tpe, x, idx))
+        )
       case t => typeToFunc(t, idx, subIndex).map(SimpleFuncProvider(_))
     }
   }
@@ -382,7 +374,7 @@ trait GeneratorTypes extends FunctionProviders {
     private def intersect(t: Seq[Type]): Type = {
       t match {
         case Seq(t) => t
-        case l if l.head.isInstanceOf[ObjectFunc] => l.head.asInstanceOf[ObjectFunc].objType
+        case l if l.head.isInstanceOf[ObjectFunc] => l.head.asInstanceOf[ObjectFunc].wholeType
         case l => internal.intersectionType(l.toList)
       }
     }

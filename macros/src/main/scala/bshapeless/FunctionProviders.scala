@@ -16,6 +16,14 @@ trait FunctionProviders extends CommonUtils {
     def incIdx(): T = withIndex(idx + 1)
   }
 
+  trait IndexedProvider {
+    protected def idxProvider: Indexed[_]
+
+    def idx: Int = idxProvider.idx
+
+    def subIndex: Int = idxProvider.subIndex
+  }
+
   sealed trait Func extends Indexed[Func] {
 
     def args: Seq[Type]
@@ -45,26 +53,33 @@ trait FunctionProviders extends CommonUtils {
     override val wholeType: Type = arg ==> inner.wholeType
   }
 
-  case class ObjectFunc(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int) extends Func {
-    val inner = {
-      if (method.paramLists.flatten.nonEmpty) { // Currently only single param lists are supported. Just like in Func
-        def buildT(args: List[List[Symbol]]): Type = args match {
-          case List(s) :: tail => s.info ==> buildT(tail)
-          case Nil => method.returnType
-        }
+  case class ObjectFunc(wholeType: Type, objType: Type, method: MethodSymbol, inner: Option[Func], idx: Int) extends Func {
 
-        typeToFunc(buildT(method.paramLists), 0, 0).headOption
-      } else None
-    }
-
-    override def args: Seq[Type] = objType +: inner.map(_.args).getOrElse(Nil)
+    override def args: Seq[Type] = objType +: inner.map(_.args).getOrElse(Seq.empty)
 
     override def result: Type = inner.map(_.result).getOrElse(method.returnType)
+
+    def resultFuncType:Type = inner.map(_.wholeType).getOrElse(method.returnType)
 
     override def subIndex: Int = 0
 
     override def withIndex(n: Int): Func = copy(idx = n)
 
+  }
+
+  object ObjectFunc {
+
+    def buildFuncFromMethod(m: MethodSymbol, idx: Int): Option[Func] = {
+      def buildT(args: List[List[Symbol]]): Func = args match {
+        case List(s) :: (tail@_ :: _) => ComplexFunc(s.info, buildT(tail), idx, 0)
+        case List(s) :: Nil => SimpleFunc1(s.info, m.returnType, idx, 0)
+      }
+      if(m.paramLists.nonEmpty) Some(buildT(m.paramLists))
+      else None
+    }
+
+    def apply(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int): ObjectFunc =
+      new ObjectFunc(wholeType, objType, method, buildFuncFromMethod(method, idx), idx)
   }
 
   def typeToFunc(t: Type, idx: Int, subIndex: Int = 0): Seq[Func] = {
@@ -75,17 +90,15 @@ trait FunctionProviders extends CommonUtils {
         Seq(SimpleFunc1(arg, t, idx, subIndex))
       case RefinedType(inner, _) =>
         inner.toArray.zipWithIndex.flatMap { case (t, i) => typeToFunc(t, idx, i) }
-      case t if t <:< Types.objectProviderTpe =>
-        val tpe = t.firstTypeArg
-        val methods = userMethods(tpe)
-        log(s"Methods: ${methods.mkString("\n")}")
-        methods.map(x => ObjectFunc(t, tpe, x, idx))
-      case MethodType(_, tpe) => typeToFunc(tpe, idx, subIndex)
       case x => sys.error("Match error " + x + " " + showRaw(x))
     }
   }
 
   trait FuncProvider extends Indexed[FuncProvider] {
+
+    protected def isSuitable(typ: Type, expectedType: Type, withSubtyping: Boolean): Boolean =
+      if(withSubtyping) typ <:< expectedType else typ =:= expectedType
+
     def fittingFunction(expectedResult: Type, withSubtyping: Boolean): Option[Func]
 
     def wholeType: Type
@@ -97,7 +110,7 @@ trait FunctionProviders extends CommonUtils {
 
   case class SimpleFuncProvider(f: Func, name: Option[String] = None) extends FuncProvider {
     override def fittingFunction(expectedResult: Type, withSubtyping: Boolean): Option[Func] =
-      Some(f).filter(x => if (!withSubtyping) x.result =:= expectedResult else x.result <:< expectedResult)
+      Some(f).filter(x => isSuitable(x.result, expectedResult, withSubtyping))
 
     override def wholeType: Type = f.wholeType
 
@@ -110,73 +123,7 @@ trait FunctionProviders extends CommonUtils {
     override def withName(n: String): FuncProvider = copy(name = Some(n))
   }
 
-  case class GenericFuncProvider(wholeType: Type, symbols: Map[Type, Set[Type]], idx: Int, subIndex: Int, name: Option[String] = None) extends FuncProvider {
-    private val genType = typeToFunc(wholeType, idx, subIndex).head
-
-    private val (poly, polyMap) = toPolyType(wholeType)
-
-    val polyBuilder = toFuncBuilder(polyMap.values.toSet, poly)
-
-    def toPolyType(t: Type): (Type, Map[Type, Type]) = {
-
-      val toSymbols = symbols.keySet.map(x => x -> x)
-      val toReplace = toSymbols.flatMap(x => symbols(x._1).map(_ -> x._2))
-      val repl = t.map(x => toReplace.find(_._1 =:= x).map(_._2).getOrElse(x))
-
-      (repl, toSymbols.toMap)
-    }
-
-    def toFuncBuilder(s: Set[Type], t: Type): FuncBuilder = {
-      t match {
-        case Func1Extractor(a, r@Func1Extractor(_, _)) =>
-          ComplexFuncBuilder(toTypeBuilder(s, a), toFuncBuilder(s, r))
-        case Func1Extractor(a, r) =>
-          SimpleFuncBuilder(toTypeBuilder(s, a), toTypeBuilder(s, r))
-      }
-    }
-
-    def toTypeBuilder(s: Set[Type], t: Type): TypeBuilder = {
-      val found = s.find(_ =:= t)
-      found match {
-        case Some(value) => Selector(value)
-        case None =>
-          if (t.typeArgs.nonEmpty)
-            Apply(t.typeConstructor, t.typeArgs.map(toTypeBuilder(s, _)))
-          else ConstType(t)
-      }
-    }
-
-    sealed trait FuncBuilder {
-      def buildFunc(f: Map[Type, Type]): Func
-    }
-
-    case class SimpleFuncBuilder(argBuilder: TypeBuilder, resBuilder: TypeBuilder) extends FuncBuilder {
-      override def buildFunc(f: Map[Type, Type]): Func =
-        SimpleFunc1(argBuilder.build(f), resBuilder.build(f), idx, subIndex)
-    }
-
-    case class ComplexFuncBuilder(argBuilder: TypeBuilder, innerBuilder: FuncBuilder) extends FuncBuilder {
-      override def buildFunc(f: Map[Type, Type]): Func =
-        ComplexFunc(argBuilder.build(f), innerBuilder.buildFunc(f), idx, subIndex)
-    }
-
-    sealed trait TypeBuilder {
-      def build(m: Map[Type, Type]): Type
-    }
-
-    case class Selector(s: Type) extends TypeBuilder {
-      override def build(m: Map[Type, Type]): Type = m(s)
-    }
-
-    case class ConstType(t: Type) extends TypeBuilder {
-      override def build(m: Map[Type, Type]): Type = t
-    }
-
-    case class Apply(tyCon: Type, builders: List[TypeBuilder]) extends TypeBuilder {
-      override def build(m: Map[Type, Type]): Type =
-        appliedType(tyCon, builders.map(_.build(m)))
-    }
-
+  case class GenericFuncProvider(polyFunc: PolyFunc, name: Option[String]) extends FuncProvider with IndexedProvider {
     @tailrec
     private def compareSingle(s: Seq[Type], top: Seq[(Type, Type)], cm: Map[Type, Type]): Map[Type, Type] = {
       top match {
@@ -196,20 +143,143 @@ trait FunctionProviders extends CommonUtils {
       }
     }
 
-
     override def fittingFunction(expectedResult: Type, withSubtyping: Boolean): Option[Func] = {
-      val cand = compareSingle(symbols.keys.toList, Seq((genType.result.dealias, expectedResult.dealias)), Map.empty)
-      if (cand.size != symbols.size) return None
-
-      val m = cand.map(x => polyMap(x._1) -> x._2)
-      val gf = polyBuilder.buildFunc(m)
-      //log(s"Generic candidate. cands: $cand exp: $expectedResult, got:  ${gf.result}")
-      Some(gf).filter(x => if (!withSubtyping) x.result =:= expectedResult else x.result <:< expectedResult)
+      val candidateTypeArgs = compareSingle(polyFunc.typeArgs, Seq((polyFunc.retTypeTemplate.dealias, expectedResult.dealias)), Map.empty)
+      if (candidateTypeArgs.size != polyFunc.typeArgs.size) return None
+      val m = polyFunc.typeArgs.map(candidateTypeArgs)
+      val gf = polyFunc.withTypeArgs(m)
+      Some(gf).filter(x => isSuitable(x.result, expectedResult, withSubtyping))
     }
 
-    override def withIndex(n: Int): FuncProvider = copy(idx = n)
+    override def withIndex(n: Int): FuncProvider = copy(polyFunc = polyFunc.withIndex(n))
 
     override def withName(n: String): FuncProvider = copy(name = Some(n))
+
+    override def wholeType: u.Type = polyFunc.wholeType
+
+    override protected def idxProvider: Indexed[_] = polyFunc
+  }
+
+  object GenericFuncProvider {
+
+    def apply(wholeType: Type, symbols: Map[Type, Set[Type]], idx: Int, subIndex: Int, name: Option[String] = None): GenericFuncProvider = {
+      new GenericFuncProvider(
+        FreePolyFunc(wholeType, symbols, idx, subIndex),
+        name
+      )
+    }
+
+    def apply(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int, subIndex: Int): GenericFuncProvider = {
+      new GenericFuncProvider(
+        ObjectPolyFunc(wholeType, objType, method, idx, subIndex),
+        Some(method.name.decodedName.toString)
+      )
+    }
+  }
+
+
+  trait PolyFunc extends Indexed[PolyFunc] {
+    def retTypeTemplate: Type
+
+    def typeArgs: Seq[Type]
+
+    def withTypeArgs(args: Seq[Type]): Func
+
+    def wholeType: Type
+
+    protected def toFuncBuilder(s: Set[Type], t: Type, keyMap: Map[Type, Int]): FuncBuilder = {
+      t match {
+        case Func1Extractor(a, r@Func1Extractor(_, _)) =>
+          ComplexFuncBuilder(toTypeBuilder(s, a, keyMap), toFuncBuilder(s, r, keyMap))
+        case Func1Extractor(a, r) =>
+          SimpleFuncBuilder(toTypeBuilder(s, a, keyMap), toTypeBuilder(s, r, keyMap))
+      }
+    }
+
+    protected def toTypeBuilder(s: Set[Type], t: Type, keyMap: Map[Type, Int]): TypeBuilder = {
+      val found = s.find(_ =:= t)
+      found match {
+        case Some(value) => Selector(keyMap(value))
+        case None if t.typeArgs.nonEmpty => Apply(t.typeConstructor, t.typeArgs.map(toTypeBuilder(s, _, keyMap)))
+        case None => ConstType(t)
+      }
+    }
+
+    protected sealed trait FuncBuilder {
+      def buildFunc(f: Map[Int, Type]): Func
+    }
+
+    protected case class SimpleFuncBuilder(argBuilder: TypeBuilder, resBuilder: TypeBuilder) extends FuncBuilder {
+      override def buildFunc(f: Map[Int, Type]): Func = SimpleFunc1(argBuilder.build(f), resBuilder.build(f), idx, subIndex)
+    }
+
+    protected case class ComplexFuncBuilder(argBuilder: TypeBuilder, innerBuilder: FuncBuilder) extends FuncBuilder {
+      override def buildFunc(f: Map[Int, Type]): Func = ComplexFunc(argBuilder.build(f), innerBuilder.buildFunc(f), idx, subIndex)
+    }
+
+    protected sealed trait TypeBuilder {
+      def build(m: Map[Int, Type]): Type
+    }
+
+    protected case class Selector(s: Int) extends TypeBuilder {
+      override def build(m: Map[Int, Type]): Type = m(s)
+    }
+
+    protected case class ConstType(t: Type) extends TypeBuilder {
+      override def build(m: Map[Int, Type]): Type = t
+    }
+
+    protected case class Apply(tyCon: Type, builders: List[TypeBuilder]) extends TypeBuilder {
+      override def build(m: Map[Int, Type]): Type = appliedType(tyCon, builders.map(_.build(m)))
+    }
+
+  }
+
+  case class FreePolyFunc(wholeType: Type, symbols: Map[Type, Set[Type]], idx: Int, subIndex: Int) extends PolyFunc {
+    private lazy val genType = typeToFunc(wholeType, idx, subIndex).head
+
+    private lazy val (poly, polyMap) = toPolyType(wholeType)
+
+    private lazy val polyBuilder = toFuncBuilder(polyMap.values.toSet, poly, typeArgs.zipWithIndex.toMap)
+
+    private def toPolyType(t: Type): (Type, Map[Type, Type]) = {
+      val toSymbols = symbols.keySet.map(x => x -> x)
+      val toReplace = toSymbols.flatMap(x => symbols(x._1).map(_ -> x._2))
+      val repl = t.map(x => toReplace.find(_._1 =:= x).map(_._2).getOrElse(x))
+      (repl, toSymbols.toMap)
+    }
+
+    override def retTypeTemplate: Type = genType.result
+
+    override val typeArgs: Seq[Type] = symbols.keys.toSeq
+
+    override def withTypeArgs(args: Seq[Type]): Func = {
+      polyBuilder.buildFunc(args.zipWithIndex.map(_.swap).toMap)
+    }
+
+    override def withIndex(n: Int): PolyFunc = copy(idx = n)
+  }
+
+  case class ObjectPolyFunc(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int, subIndex: Int) extends PolyFunc {
+    private lazy val (genType, symbols): (Func, Seq[Type]) = {
+      method.typeSignature match {
+        case PolyType(symbols, _) => (ObjectFunc.buildFuncFromMethod(method, idx).get, symbols.map(_.asType.toType))
+        case x => sys.error(s"Wrong signature $x")
+      }
+    }
+
+    private lazy val builder = toFuncBuilder(symbols.toSet, genType.wholeType, symbols.zipWithIndex.toMap)
+
+    override def retTypeTemplate: u.Type = genType.result
+
+    override def typeArgs: Seq[u.Type] = symbols
+
+    override def withTypeArgs(args: Seq[Type]): Func = {
+      val inner = builder.buildFunc(args.zipWithIndex.map(_.swap).toMap)
+      new ObjectFunc(wholeType, objType, method, Some(inner), idx)
+    }
+
+    override def withIndex(n: Int): PolyFunc = copy(idx = n)
   }
 
 }

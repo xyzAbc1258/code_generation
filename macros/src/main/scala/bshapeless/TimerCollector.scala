@@ -19,6 +19,11 @@ class TimerCollector {
     r
   }
 
+  @inline def tickReturn[T](key: String, value: Float = 1)(t: T): T = {
+    tick(key, value)
+    t
+  }
+
   def tick(key: String, value: Float = 1): Unit = {
     m.updateWith(key)(_.map(_ + value) orElse Some(value))
     unit.getOrElseUpdate(key, "ticks")

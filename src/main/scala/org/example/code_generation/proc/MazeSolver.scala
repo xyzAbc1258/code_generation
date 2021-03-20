@@ -2,6 +2,7 @@ package org.example.code_generation.proc
 
 
 import bshapeless.NoSubtyping
+import bshapeless.ObjectFuncProvider
 import bshapeless.{HListUtils, MGenerator, NoLoops, Var1, Var2}
 import bshapeless.degeneric.{DegenericSquare, Filter, Fold}
 import org.example.code_generation.proc.MazeSolver._
@@ -216,6 +217,23 @@ object MazeSolver {
 
   type RightDownDirs = right1 :: down1 :: HNil
 
+  trait MazeTraverser {
+    def right[CN, RN](free: P[RN, S[CN]])(current: PT[RN, CN]): PT[RN, S[CN]]
+    def down[CN, RN](free: P[S[RN], CN])(current: PT[RN, CN]): PT[S[RN], CN]
+    def up[CN, RN](free: P[RN, CN])(current: PT[S[RN], CN]): PT[RN, CN]
+    def left[CN, RN](free: P[RN, CN])(current: PT[RN, S[CN]]):PT[RN, CN]
+  }
+
+  object MazeTraverser extends MazeTraverser {
+    override def right[CN, RN](free: P[RN, S[CN]])(current: PT[RN, CN]): PT[RN, S[CN]] = current.asInstanceOf
+
+    override def down[CN, RN](free: P[S[RN], CN])(current: PT[RN, CN]): PT[S[RN], CN] = current.asInstanceOf
+
+    override def up[CN, RN](free: P[RN, CN])(current: PT[S[RN], CN]): PT[RN, CN] = current.asInstanceOf
+
+    override def left[CN, RN](free: P[RN, CN])(current: PT[RN, S[CN]]): PT[RN, CN] = current.asInstanceOf
+  }
+
   def main(args: Array[String]): Unit = {
     /*val res = MGenerator.applyO[
       Nat._15,
@@ -242,15 +260,17 @@ object MazeSolver {
         HListUtils.toHList(Range(0, 1000).map(_ => "").toList))(null, null))
     }
 */
-    val res3 = MGenerator.RuntimeMacroImpl.generateStrings[
+    val res3 = MGenerator.applyL[
       Nat._1,
       M2._61,
-      LDirections1,//RightDownDirs,//
-      Arr30,//Arr16,//M2.filtered9.Out,//
+      ObjectFuncProvider[MazeTraverser]::HNil,//LDirections1,//RightDownDirs,//
+      FieldType["traverser",MazeTraverser] :: Arr30,//Arr16,//M2.filtered9.Out,//
       PT[_0, _0] => PT[_29, _29], //PT[_15, _8],
       NoLoops with NoSubtyping
     ]
-    res3.foreach(println(_))
+    res3.expressions
+      .map(_.stringify(""::HNil, "traverser"::(Range(1, 1000).foldRight[HList](HNil)(_.toString :: _)))(null, null))
+      .foreach(println(_))
   }
 }
 

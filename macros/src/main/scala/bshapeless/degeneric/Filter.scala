@@ -1,6 +1,7 @@
 package bshapeless.degeneric
 
 import bshapeless.CommonUtils
+import bshapeless.ContextLogging
 import shapeless.HList
 
 import scala.annotation.tailrec
@@ -16,7 +17,7 @@ object Filter {
 
   implicit def mkInstance[H1 <: HList, TFs <: HList, T]: Filter[H1,TFs, T] = macro Macro.make[H1,TFs, T]
 
-  class Macro(val c: whitebox.Context) extends CommonUtils {
+  class Macro(val c: whitebox.Context) extends CommonUtils with ContextLogging {
 
     override type U = c.universe.type
     override val u: c.universe.type = c.universe

@@ -6,9 +6,7 @@ import shapeless._
 
 import scala.collection.mutable
 import scala.language.experimental.macros
-import scala.reflect.api.Universe
 import scala.reflect.macros.blackbox
-import scala.tools.reflect.ToolBox
 import scala.tools.reflect.mkConsoleFrontEnd
 
 trait Options
@@ -31,7 +29,7 @@ object MGenerator {
 
   def generateStrings[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options]: Seq[String] = macro MacroImpl.macroImplString[L, N, C, A, T, O]
 
-  class MacroImpl(val c: blackbox.Context) extends MacroSimplImpl {
+  class MacroImpl(val c: blackbox.Context) extends MacroSimplImpl with ContextLogging {
     override type U = c.universe.type
     override val u = c.universe
 
@@ -39,30 +37,21 @@ object MGenerator {
 
     def macroImpl[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree =
       buildResult[u.Tree, L, N, C, A, T, O] { case (smallestCandidates, _) =>
-        val reified = {
-          val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
-          val intermediateValueDefs = deps.map {
-            _.valDef
-          }
-          log(s"Deps: " + deps.map(_.no).mkString("\n"))
-          val ss = q"Seq(..${smallestCandidates.map(_.term)})"
-          val reified =
-            q"""
-                new MGenerator[
-                    ${TypeTree(weakTypeOf[L])},
-                    ${TypeTree(weakTypeOf[N])},
-                    ${TypeTree(weakTypeOf[C])},
-                    ${TypeTree(weakTypeOf[A])},
-                    ${TypeTree(weakTypeOf[T])},
-                    ${TypeTree(weakTypeOf[O])}]($ss)
-                """
-          q"""{
+        val deps = smallestCandidates.flatMap(_.allDepesWithItself).distinct.sortBy(_.no)
+        val intermediateValueDefs = deps.map {
+          _.valDef
+        }
+        log(s"Deps: " + deps.map(_.no).mkString("\n"))
+        val ss = q"Seq(..${smallestCandidates.map(_.term)})"
+        log(Timer.printable)
+
+        def ttr[T: WeakTypeTag] = TypeTree(weakTypeOf[T])
+
+        val reified = q"""new MGenerator[${ttr[L]}, ${ttr[N]}, ${ttr[C]}, ${ttr[A]}, ${ttr[T]}, ${ttr[O]}]($ss)"""
+        q"""{
                   ..$intermediateValueDefs
                   $reified
                }"""
-        }
-        log(Timer.printable)
-        reified
       }
 
     def macroImplString[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
@@ -74,7 +63,6 @@ object MGenerator {
   object RuntimeMacroImpl extends MacroSimplImpl {
     override type U = scala.reflect.runtime.universe.type
     val u = scala.reflect.runtime.universe
-    override val c: blackbox.Context = null // not very nice solution...
 
     val tb = scala.tools.reflect.ToolBox(u.rootMirror).mkToolBox(mkConsoleFrontEnd())
 
@@ -129,27 +117,19 @@ object MGenerator {
           cutBranches.get(tpeProvider, stage).exists(_ >= e.depth)
         }
         if (shouldCut) {
-          Timer.tick("Cut!")
-          return Set()
+          return Timer.tickReturn("Cut!")(Set.empty)
         }
         val breakLoops = Timer.timer("loop detection") {
-          e.noLoops && stackHashCodeMap
-            .getOrElse(tpeProvider.hashCode, Nil)
-            .exists(x => (x.provider eq tpeProvider) && !(x eq e))
+          shouldBreak(e, tpeProvider)
         }
         val existing: Set[Candidate] = Timer.timer("cache check") {
-          m.getOrElse(tpeProvider, {
-            Timer.tick("cache miss")
-            Set.empty[Candidate]
-          })
+          m.getOrElse(tpeProvider, Timer.tickReturn("cache miss")(Set.empty[Candidate]))
         }
         if (breakLoops) {
-          Timer.tick("Break")
-          return existing
+          return Timer.tickReturn("Break")(existing)
         }
         if (existing.size >= e.limit) {
-          Timer.tick("Used calculated")
-          return existing
+          return Timer.tickReturn("Used calculated")(existing)
         }
         val hash = tpeProvider.hashCode
         stackHashCodeMap.updateWith(hash)(_ map (e +: _) orElse Some(Seq(e)))
@@ -160,6 +140,12 @@ object MGenerator {
         val newAll = Utils.concat(existing, next)
         m.update(tpeProvider, newAll)
         newAll
+      }
+
+      @inline private def shouldBreak(e: ExecCtx, tpeProvider: GenCtxTpeProvider.CustomGenCtxTpeProvider): Boolean = {
+        e.noLoops && stackHashCodeMap
+          .getOrElse(tpeProvider.hashCode, Nil)
+          .exists(x => (x.provider eq tpeProvider) && !(x eq e))
       }
     }
 
@@ -207,30 +193,34 @@ object MGenerator {
           if (count >= ctx.limit) {
             Set.empty
           } else {
-            val argsTrees = c.args.map(ctx.decreaseDepthWithResult)
-              .foldLeft[Seq[Set[Candidate]]](Seq.empty) { //Generate till first failure
-                case (l, t) if l.headOption.exists(_.isEmpty) => l
-                case (l, t) => generateFunc(t) +: l
-              }.reverse
-
-            if (argsTrees.headOption.exists(_.isEmpty)) Set.empty
-            else {
-              val argumentLists = Utils.product(argsTrees)
-              val funcExpr = ExprCreate.fromCtxSelect(c.idx)(ctx.withResult(c.wholeType))
-              val s = argumentLists.map(argumentList => applyFunc(c)(funcExpr, argumentList))
-              count += s.size
-              s
-            }
+            val candidates = buildFuncApp(c)
+            count += candidates.size
+            candidates
           }
         }
         fff.flatten.limit
       }
     }
 
+    private def buildFuncApp(c: Func)(implicit ctx: ExecCtx): Set[Candidate] = {
+      val argsTrees = c.args.map(ctx.decreaseDepthWithResult)
+        .foldLeft[Seq[Set[Candidate]]](Seq.empty) { //Generate till first failure
+          case (l, _) if l.headOption.exists(_.isEmpty) => l
+          case (l, t) => generateFunc(t) +: l
+        }.reverse
+
+      if (argsTrees.headOption.exists(_.isEmpty)) Set.empty
+      else {
+        val argumentLists = Utils.product(argsTrees)
+        val funcExpr = ExprCreate.fromCtxSelect(c.idx)(ctx.withResult(c.wholeType))
+        argumentLists.map(argumentList => applyFunc(c)(funcExpr, argumentList))
+      }
+    }
+
     def generateFromArgs(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.FromArgs) {
       ctx.args match { //Can we take result from arguments
         case SingleArg(t, _) if t <:< ctx.result => Set(ExprCreate.fromArgsEq)
-        case a: ListArgs => Timer.timer("m_<:<") {
+        case a: ListArgs => Timer.timer("args selection") {
           a.subTypeIndices(ctx.result).map(ExprCreate.fromArgsSelect).toSet
         }
         case CoproductArgs(_, _) => sys.error("Shouldn't be here")
@@ -256,27 +246,20 @@ object MGenerator {
 
     def generateFunc(implicit ctx: ExecCtx): Set[Candidate] = {
       ctx.result match {
-        case Func1Extractor(t, r) => //Result is a function
-          Cache.cached(Stage.FuncGen) {
-            t match {
-              case t@Func1Extractor(_, _) => //Result argument is a function
-                generateFunc(
-                  ctx.withCtx(c => c.prepend(typeToFuncProvider(t, 0))).withResult(r)
-                ).map(ExprCreate.abstractFunc).limit
-              case t => //Result argument is not a function
-                ctx.args match {
-                  case e: SingleArg =>
-                    generateFunc {
-                      ctx.withArgs(ListArgs(argsFromA(t) :: e :: Nil)).withResult(r)
-                    }.map(ExprCreate.abstractValNotH).limit
-                  case la: ListArgs =>
-                    generateFunc {
-                      ctx.withArgs(la.prepend(argsFromA(t))).withResult(r)
-                    }.map(ExprCreate.abstractVal).limit
-                  case CoproductArgs(_, _) => sys.error("Coproduct shouldnt be here")
-                }
-            }
+        case Func1Extractor(t@Func1Extractor(_, _), r) => Cache.cached(Stage.FuncGen) {
+          val newCtx = ctx.withCtx(_.prepend(typeToFuncProvider(t, 0))).withResult(r)
+          generateFunc(newCtx).map(ExprCreate.abstractFunc).limit
+        }
+        case Func1Extractor(t, r) => Cache.cached(Stage.FuncGen) {
+          val (withNewArgsCtx, exprCtor) = ctx.args match {
+            case e: SingleArg =>
+              (ctx.withArgs(ListArgs(argsFromA(t) :: e :: Nil)), ExprCreate.abstractValNotH _)
+            case la: ListArgs =>
+              (ctx.withArgs(la.prepend(argsFromA(t))), ExprCreate.abstractVal _)
+            case CoproductArgs(_, _) => sys.error("Coproduct shouldnt be here")
           }
+          generateFunc(withNewArgsCtx.withResult(r)).map(exprCtor)
+        }
         case _ => generateNormal(ctx) //Result is not a function
       }
     }
@@ -298,8 +281,8 @@ object MGenerator {
     def generateCompositeCoproduct(implicit ctx: ExecCtx): Set[Candidate] = Cache.cached(Stage.GenComposite) {
       val a1 = ctx.result.firstTypeArg
       val rest = ctx.result.secondTypeArg
-      val a1Trees = generateComposite(ctx.withResult(a1))
-      val restTrees = if (rest <:< Types.cnilType) Set.empty else generateComposite(ctx.withResult(rest))
+      val restTrees = if (rest <:< Types.cnilType) Set.empty else generateComposite(ctx.withResult(rest)).limit
+      val a1Trees = if (restTrees.size == ctx.limit) Set.empty else generateCompositeCoproduct(ctx.withResult(a1))
       val a1TreesInl = a1Trees.map(ExprCreate.inlResult(_))
       val restTreesInr = restTrees.map(ExprCreate.inrResult(_))
       Utils.concat(a1TreesInl, restTreesInr)

@@ -1,6 +1,7 @@
 package bshapeless.degeneric
 
 import bshapeless.CommonUtils
+import bshapeless.ContextLogging
 import shapeless._
 
 import scala.collection.immutable
@@ -47,7 +48,7 @@ object DegenericSquare {
 
   implicit def mkInstance[H1 <: HList, H2 <: HList, F[_,_], Folder <: Fold]: DegenericSquare[H1,H2,F, Folder] = macro Macro.make[H1,H2,F, Folder]
 
-  class Macro(val c: whitebox.Context) extends CommonUtils {
+  class Macro(val c: whitebox.Context) extends CommonUtils with ContextLogging {
 
     override type U = c.universe.type
     override val u: c.universe.type = c.universe

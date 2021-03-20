@@ -4,14 +4,18 @@ import bshapeless.utils.CommonTypeOps
 
 import scala.reflect.macros.blackbox
 
-trait CommonUtils {
-  type U <: scala.reflect.api.Universe
-  val u: U
+trait ContextLogging {
   val c: blackbox.Context
+  def log(msg: String, force: Boolean = true): Unit = c.info(c.enclosingPosition, msg, force)
+}
+
+trait CommonUtils {
+  type U <: scala.reflect.api.Universe with Singleton
+  val u: U
 
   import u._
 
-  def log(msg: String, force: Boolean = true): Unit = Option(c).foreach(x => x.info(x.enclosingPosition, msg, force = force))
+  def log(msg: String, force: Boolean = true): Unit
 
   object Types extends utils.Types[u.type](u) {
     override final def size(t: Type): Int = Timer.timer("Type size mesaure") {
