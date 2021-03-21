@@ -11,6 +11,8 @@ allprojects {
         compile group: 'org.scala-lang', name: 'scala-library', version: '2.13.4'
         compile group: 'com.chuusai', name: 'shapeless_2.13', version: '2.4.0-M1'
         compile group: 'org.typelevel', name: 'kind-projector_2.13.4', version: '0.11.2'
+
+        testImplementation group: 'org.scalatest', name: 'scalatest_2.13', version: '3.3.0-SNAP3'
     }
 
     tasks.withType(ScalaCompile) {

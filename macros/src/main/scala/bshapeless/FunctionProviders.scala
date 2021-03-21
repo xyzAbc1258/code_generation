@@ -55,11 +55,13 @@ trait FunctionProviders extends CommonUtils {
 
   case class ObjectFunc(wholeType: Type, objType: Type, method: MethodSymbol, inner: Option[Func], idx: Int) extends Func {
 
+    private def methodRealType: Type = method.returnType.asSeenFrom(objType, objType.typeSymbol)
+
     override def args: Seq[Type] = objType +: inner.map(_.args).getOrElse(Seq.empty)
 
-    override def result: Type = inner.map(_.result).getOrElse(method.returnType)
+    override def result: Type = inner.map(_.result).getOrElse(methodRealType)
 
-    def resultFuncType:Type = inner.map(_.wholeType).getOrElse(method.returnType)
+    def resultFuncType:Type = inner.map(_.wholeType).getOrElse(methodRealType)
 
     override def subIndex: Int = 0
 
@@ -69,17 +71,19 @@ trait FunctionProviders extends CommonUtils {
 
   object ObjectFunc {
 
-    def buildFuncFromMethod(m: MethodSymbol, idx: Int): Option[Func] = {
+    def buildFuncFromMethod(objType: Type, m: MethodSymbol, idx: Int): Option[Func] = {
+      //in case function is generic and we have specified type which arise from object type
+      def inObjView(t: Type): Type = t.asSeenFrom(objType, objType.typeSymbol)
       def buildT(args: List[List[Symbol]]): Func = args match {
-        case List(s) :: (tail@_ :: _) => ComplexFunc(s.info, buildT(tail), idx, 0)
-        case List(s) :: Nil => SimpleFunc1(s.info, m.returnType, idx, 0)
+        case List(s) :: (tail@_ :: _) => ComplexFunc(inObjView(s.info), buildT(tail), idx, 0)
+        case List(s) :: Nil => SimpleFunc1(inObjView(s.info), inObjView(m.returnType), idx, 0)
       }
       if(m.paramLists.nonEmpty) Some(buildT(m.paramLists))
       else None
     }
 
     def apply(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int): ObjectFunc =
-      new ObjectFunc(wholeType, objType, method, buildFuncFromMethod(method, idx), idx)
+      new ObjectFunc(wholeType, objType, method, buildFuncFromMethod(objType, method, idx), idx)
   }
 
   def typeToFunc(t: Type, idx: Int, subIndex: Int = 0): Seq[Func] = {
@@ -263,7 +267,7 @@ trait FunctionProviders extends CommonUtils {
   case class ObjectPolyFunc(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int, subIndex: Int) extends PolyFunc {
     private lazy val (genType, symbols): (Func, Seq[Type]) = {
       method.typeSignature match {
-        case PolyType(symbols, _) => (ObjectFunc.buildFuncFromMethod(method, idx).get, symbols.map(_.asType.toType))
+        case PolyType(symbols, _) => (ObjectFunc.buildFuncFromMethod(objType, method, idx).get, symbols.map(_.asType.toType))
         case x => sys.error(s"Wrong signature $x")
       }
     }

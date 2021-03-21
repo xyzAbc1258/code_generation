@@ -121,7 +121,7 @@ class ExprStringBuilder[W[_]] extends ExprBuilderGeneric[ExprTree ,ContextString
   }
 
   override def buildAbstractFun(b: ExprTree): ContextStringBuilder = (h,a) => {
-    val name = "f" + a.asInstanceOf[HList].runtimeLength
+    val name = "f" + h.asInstanceOf[HList].runtimeLength
     s"$name => ${build(b).build(name :: h.asInstanceOf[HList], a)}"
   }
 

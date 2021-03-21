@@ -30,9 +30,9 @@ sealed abstract class Expr[Ctx <: HList, A, +R](val typ: ExprType) extends ((Ctx
 
 object HNilCreate {
 
-  case object HNilCreate extends Expr[Nothing, Any, HNil](ExprType.HNilTree) {
+  case object HNilCreate extends Expr[HList, Any, HNil](ExprType.HNilTree) {
 
-    override def apply(ctx: Nothing, a: Any): HNil = HNil
+    override def apply(ctx: HList, a: Any): HNil = HNil
 
     override def size: Int = 1
 
@@ -57,8 +57,8 @@ case class HListResultSplit[Ctx <: HList, A, R1, RR <: HList](
 
 object CNilCreate {
 
-  case object CNilCreate extends Expr[Nothing, CNil, Nothing](ExprType.CNilArg) {
-    override def apply(v1: Nothing, v2: CNil): Nothing = v2.impossible
+  case object CNilCreate extends Expr[HNil, CNil, Nothing](ExprType.CNilArg) {
+    override def apply(v1: HNil, v2: CNil): Nothing = v2.impossible
 
     override def size: Int = 1
 

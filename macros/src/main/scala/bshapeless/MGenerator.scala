@@ -31,7 +31,7 @@ object MGenerator {
 
   class MacroImpl(val c: blackbox.Context) extends MacroSimplImpl with ContextLogging {
     override type U = c.universe.type
-    override val u = c.universe
+    override val u: c.universe.type = c.universe
 
     import u._
 
@@ -45,7 +45,7 @@ object MGenerator {
         val ss = q"Seq(..${smallestCandidates.map(_.term)})"
         log(Timer.printable)
 
-        def ttr[T: WeakTypeTag] = TypeTree(weakTypeOf[T])
+        def ttr[Typ: WeakTypeTag] = TypeTree(weakTypeOf[Typ])
 
         val reified = q"""new MGenerator[${ttr[L]}, ${ttr[N]}, ${ttr[C]}, ${ttr[A]}, ${ttr[T]}, ${ttr[O]}]($ss)"""
         q"""{
@@ -62,9 +62,9 @@ object MGenerator {
 
   object RuntimeMacroImpl extends MacroSimplImpl {
     override type U = scala.reflect.runtime.universe.type
-    val u = scala.reflect.runtime.universe
+    val u: U = scala.reflect.runtime.universe
 
-    val tb = scala.tools.reflect.ToolBox(u.rootMirror).mkToolBox(mkConsoleFrontEnd())
+    private val tb = scala.tools.reflect.ToolBox(u.rootMirror).mkToolBox(mkConsoleFrontEnd())
 
     override def log(msg: String, force: Boolean): Unit = println(s"[Macro log] $msg")
 
@@ -282,7 +282,7 @@ object MGenerator {
       val a1 = ctx.result.firstTypeArg
       val rest = ctx.result.secondTypeArg
       val restTrees = if (rest <:< Types.cnilType) Set.empty else generateComposite(ctx.withResult(rest)).limit
-      val a1Trees = if (restTrees.size == ctx.limit) Set.empty else generateCompositeCoproduct(ctx.withResult(a1))
+      val a1Trees = if (restTrees.size == ctx.limit) Set.empty else generateFromCoproduct(ctx.withResult(a1))
       val a1TreesInl = a1Trees.map(ExprCreate.inlResult(_))
       val restTreesInr = restTrees.map(ExprCreate.inrResult(_))
       Utils.concat(a1TreesInl, restTreesInr)
