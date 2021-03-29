@@ -2,6 +2,16 @@ package org.example.code_generation.proc
 
 object MazeGen {
 
+  def writeMaze(a: Array[Array[Boolean]]): Unit = {
+    for(a <- a) {
+      for(s <- a) {
+        if(s) print(" ")
+        else print("X")
+      }
+      println("|")
+    }
+  }
+
   def genNat(from: Int, to: Int, succS: String, zS: String): String = {
     if(from > to) return ""
     if(from == 0) return s"type _0 = $zS\n${genNat(from + 1, to, succS, zS)}"
@@ -11,7 +21,8 @@ object MazeGen {
   def main(args: Array[String]): Unit = {
     //println(genMaze(30, free.flatten, "P"))
     //println(genNat(23, 80, "shapeless.Succ", "Z"))
-    println(fromFile("./mtext.txt", "P"))
+    //println(fromFile("./mtext.txt", "P"))
+    writeMaze(free)
   }
 
   def genMaze(rowsC: Int, arr: Array[Array[Boolean]], pairS: String): String = {

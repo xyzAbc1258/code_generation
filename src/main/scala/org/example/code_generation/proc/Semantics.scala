@@ -1,12 +1,14 @@
 package org.example.code_generation.proc
 
-sealed trait Semantics
+
 
 object Semantics {
   implicit class Tag[T](t: T) {
     def tag[S <: Semantics]: T with S = t.asInstanceOf[T with S]
   }
 }
+
+sealed trait Semantics
 
 trait OpSemantics extends Semantics
 

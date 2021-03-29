@@ -76,3 +76,26 @@ case object Eq extends CmpWhich {
 }
 
 case class JmpIf(lineNumber: Int with LineNumber, reg: Int with RegSrc, which: CmpWhich) extends Command
+
+object Command {
+
+  def parse(line: String): Command = {
+    implicit def p[T <: Semantics](s: String): Int with T = java.lang.Integer.parseInt(s).tag[T]
+
+    line match {
+      case s"ld $regDst $memSrc" => Load(memSrc, regDst) //load
+      case s"ldc $regDst $const" => LoadConst(regDst, const) //load const
+      case s"st $memDest $regSrc" => Store(regSrc, memDest) //store
+      case s"mv $regDst $regSrc" => MoveReg(regSrc, regDst) //move
+      case s"add $reg1 $reg2" => Add(reg1, reg2) //add
+      case s"sub $reg1 $reg2" => Subtract(reg1, reg2) //sub
+      case s"mul $reg1 $reg2" => Mul(reg1, reg2) //multiply
+      case s"jmp $line" => Jmp(line) // jmp
+      case s"jmpEq $line $reg" => JmpIf(line, reg, Eq) // jmp if zero
+      case s"jmpLt $line $reg" => JmpIf(line, reg, Lt) //jmp if negative
+      case s"jmpGt $line $reg" => JmpIf(line, reg, Gt) //jmp if positive
+      case s"cmp $r1 $r2" => Cmp(r1, r2) // compares two registers and stores result in first
+    }
+  }
+
+}
