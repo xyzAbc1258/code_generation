@@ -58,8 +58,8 @@ object Interpreter {
   private val ctxValue: Ctx =
     (((x: MemoryState) => (y: (Int with Result, Int with RegDst)) => x.withReg(y._2, y._1).tag[Result]) ::
       ((x: MemoryState) => (y: (Int with Result, Int with MemDst)) => x.withMemory(y._2, y._1).tag[Result]) ::
-      ((x: MemoryState) => (y: Int with MemSrc) => x.getMemory(y).tag) ::
-      ((x: MemoryState) => (y: Int with RegSrc) => x.getReg(y).tag) ::
+      ((x: MemoryState) => (y: Int with MemSrc) => x.getMemory(y).tag[Result]) ::
+      ((x: MemoryState) => (y: Int with RegSrc) => x.getReg(y).tag[Result]) ::
       ObjectFuncProvider ::
       ObjectFuncProvider ::
       ObjectFuncProvider ::
@@ -77,22 +77,36 @@ object Interpreter {
       HNil).asInstanceOf[Ctx]
 
 
-  private val generator = {
-    val funcs = MGenerator.applyL[
-      Nat._5,
+  private val generator = { x: genericCommand.Repr =>
+    MGenerator.raw[
       Nat._5,
       Ctx,
       genericCommand.Repr,
       ExecutorState => (ExecutorState with Result),
       Options
-    ]
-    val first = funcs.expressions.minBy(_.size)
-
-    first
+    ]((((x: MemoryState) => (y: (Int with Result, Int with RegDst)) => x.withReg(y._2, y._1).tag[Result]) ::
+      ((x: MemoryState) => (y: (Int with Result, Int with MemDst)) => x.withMemory(y._2, y._1).tag[Result]) ::
+      ((x: MemoryState) => (y: Int with MemSrc) => x.getMemory(y).tag[Result]) ::
+      ((x: MemoryState) => (y: Int with RegSrc) => x.getReg(y).tag[Result with Operand1 with Operand2]) ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ObjectFuncProvider ::
+      ((x: ExecutorState) => (line: Int with LineNumber) => (jump: Boolean with Result) =>
+        if (jump) x.jumpTo(line).tag[Result]
+        else x.nextWithStateI(x.memoryState).tag[Result]
+        ) ::
+      ObjectFuncProvider ::
+      HNil).asInstanceOf[Ctx], x)
   }
 
   def stringExpression: String = {
-    generator.stringify(
+    /*generator.stringify(
       "set_register" ::
         "set_memory" ::
         "get_memory" ::
@@ -100,14 +114,14 @@ object Interpreter {
         "" :: "" :: "" :: "" :: "" :: "" :: "" :: "" :: "" ::
         "conditional_jump" ::
         "" ::
-        HNil, "command")
+        HNil, "command")*/ ""
   }
 
   @tailrec
   final def execute(x: ExecutorState): ExecutorState = {
     if (x.finished) x
     else {
-      val next = generator(ctxValue, genericCommand.to(x.currentInstruction))(x)
+      val next = generator(genericCommand.to(x.currentInstruction))(x)
       execute(next)
     }
   }

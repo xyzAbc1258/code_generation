@@ -1,5 +1,6 @@
 package bshapeless
 
+import bshapeless.exprs.ExprBuilderGeneric
 import bshapeless.exprs.ExprTree
 import bshapeless.exprs.ExprType
 import bshapeless.utils.AllEqualWrapper
@@ -9,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.language.implicitConversions
+import scala.util.Random
 
 trait GeneratorTypes extends FunctionProviders {
 
@@ -62,12 +64,12 @@ trait GeneratorTypes extends FunctionProviders {
       override def build[R](b: Builder[R]): R = b.buildPair(first, second)
     }
 
-    case class AbstractVal(inner: StructureTree, argIsHList: Boolean) extends StructureTree("abstractVal", ExprType.AbstractVal(argIsHList)) {
-      override def build[R](b: Builder[R]): R = b.buildAbstractVal(inner, argIsHList)
+    case class AbstractVal(inner: StructureTree, argIsHList: Boolean, argTpt: AllEqualWrapper[Type]) extends StructureTree("abstractVal", ExprType.AbstractVal(argIsHList)) {
+      override def build[R](b: Builder[R]): R = b.buildAbstractVal(inner, argIsHList, TypeTree(argTpt.t))
     }
 
-    case class AbstractFun(inner: StructureTree) extends StructureTree("abstractFun", ExprType.AbstractFun) {
-      override def build[R](b: Builder[R]): R = b.buildAbstractFun(inner)
+    case class AbstractFun(inner: StructureTree, argTpt: AllEqualWrapper[Type]) extends StructureTree("abstractFun", ExprType.AbstractFun) {
+      override def build[R](b: Builder[R]): R = b.buildAbstractFun(inner, TypeTree(argTpt.t))
     }
 
     case class InlResult(inner: StructureTree) extends StructureTree("inl", ExprType.InlResult) {
@@ -164,7 +166,7 @@ trait GeneratorTypes extends FunctionProviders {
     def abstractVal(e: Candidate)(implicit ctx: ExecCtx): Candidate =
       Candidate(
         q"$ns.AbstractVal[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${ttr(resType.secondTypeArg)}]($e)",
-        StructureTree.AbstractVal(e, true),
+        StructureTree.AbstractVal(e, true, AllEqualWrapper(resType.firstTypeArg)),
         e
       )
 
@@ -172,14 +174,14 @@ trait GeneratorTypes extends FunctionProviders {
     def abstractValNotH(e: Candidate)(implicit ctx: ExecCtx): Candidate =
       Candidate(
         q"$ns.AbstractValNotH[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${ttr(resType.secondTypeArg)}]($e)",
-        StructureTree.AbstractVal(e, false),
+        StructureTree.AbstractVal(e, false, AllEqualWrapper(resType.firstTypeArg)),
         e
       )
 
     def abstractFunc(e: Candidate)(implicit ctx: ExecCtx): Candidate =
       Candidate(
         q"$ns.AbstractFunc[$ctxTypeT, $argTypeT, ${ttr(resType.firstTypeArg)}, ${ttr(resType.secondTypeArg)}]($e)",
-        StructureTree.AbstractFun(e),
+        StructureTree.AbstractFun(e, AllEqualWrapper(resType.firstTypeArg)),
         e
       )
 
@@ -569,5 +571,99 @@ trait GeneratorTypes extends FunctionProviders {
   }
 
   class ExprTreeBuilder(eval: u.Tree => Any) extends bshapeless.exprs.ExprTreeBuilder[({type W[_] = Tree})#W](eval)
+
+
+  case class ExprRawTreeBuilder(
+    ctxList: Seq[Tree], arg: Any
+  ) extends ExprBuilderGeneric[StructureTree, Tree, ({type T[_] = Tree})#T] {
+
+    override def buildHNil: Tree = q"shapeless.HNil"
+
+    override def buildHList(h: StructureTree, t: StructureTree): Tree =
+      q"shapeless.::(${build(h)}, ${build(t)})"
+
+    override def buildCNil: Tree = q"${untyped(arg.asInstanceOf[Tree])}.impossible"
+
+    override def buildCoproduct(h: StructureTree, t: StructureTree): Tree = {
+      def withNewArg(nArg: Tree)(st: StructureTree): Tree = ExprRawTreeBuilder(ctxList, nArg).build(st)
+      def getVar(tpe: Type) = Typed(Ident(TermName(s"a_${Random.nextInt(899) + 100}")), TypeTree(tpe))
+
+      val argType = Option(arg.asInstanceOf[Tree].tpe).getOrElse(arg.asInstanceOf[Typed].tpt.asInstanceOf[TypeTree].tpe.secondTypeArg)
+
+      val inlType = argType.dealias.firstTypeArg
+      val inrType = argType.dealias.secondTypeArg
+
+      val matchL = {
+        val inlVar = getVar(appliedType(weakTypeOf[shapeless.Inl[_, _]].typeConstructor, inlType, inrType))
+        val pat = Apply(q"shapeless.Inl", List(Bind(inlVar.expr.asInstanceOf[Ident].name, Typed(Ident(termNames.WILDCARD), TypeTree(inlType)))))
+        cq"$pat => ${withNewArg(untyped(inlVar))(h)}"
+      }
+
+      val matchR = {
+        val inrVar = getVar(appliedType(weakTypeOf[shapeless.Inr[_, _]].typeConstructor, inlType, inrType))
+        val pat = Apply(q"shapeless.Inr", List(Bind(inrVar.expr.asInstanceOf[Ident].name, Typed(Ident(termNames.WILDCARD), TypeTree(inrType)))))
+        cq"$pat => ${withNewArg(inrVar)(t)}"
+      }
+
+      q"""${untyped(arg.asInstanceOf[Tree])} match { case ..${List(matchL, matchR)} }"""
+    }
+
+    private def untyped(e: Tree): Tree = e match {
+      case Apply(t, args) => Apply(untyped(t), args.map(untyped))
+      case Select(t, n) => Select(untyped(t), n)
+      case ValDef(_, n, _, _) => Ident(n)
+      case Typed(e, _) => e
+      case e => e
+    }
+
+
+    override def buildSelectArg(n: Int): Tree = untyped(arg.asInstanceOf[Seq[Tree]](n))
+
+    override def buildFromArg: Tree = untyped(arg.asInstanceOf[Tree])
+
+    override def buildSelectCtx(n: Int): Tree = untyped(ctxList(n))
+
+    def buildFuncApp(funcTree: Tree, argTree: Tree): Tree = q"$funcTree($argTree)"
+
+    override def buildApply(f: StructureTree, a: StructureTree): Tree =
+      buildFuncApp(build(f), build(a))
+
+    override def buildApplyNative(name: String, func: Tree, memberFunc: Boolean, arg: StructureTree): Tree =
+      buildFuncApp(func, build(arg))
+
+    override def buildPair(f: StructureTree, s: StructureTree): Tree = q"(${build(f)}, ${build(s)})"
+
+    private def buildValDef(name: String, tpt: Tree): Tree = {
+      ValDef(Modifiers(Flag.PARAM), TermName(name), tpt, EmptyTree)
+    }
+
+    private def buildAbstract(newCtx: Seq[Tree], newArgs: Any)(ident: Tree, b: StructureTree): Tree = {
+      val newBuilder = ExprRawTreeBuilder(newCtx, newArgs)
+      val bodyTree = newBuilder.build(b)
+      q"($ident) => $bodyTree"
+    }
+
+    override def buildAbstractVal(b: StructureTree, argsIsHList: Boolean, argType: Tree): Tree = {
+      if (argsIsHList) {
+        val args = arg.asInstanceOf[Seq[Tree]]
+        val newVar = buildValDef(s"a_${args.size}", argType)
+        buildAbstract(ctxList, newVar +: args)(newVar, b)
+      } else {
+        val newVar = buildValDef("a_0", argType)
+        buildAbstract(ctxList, Seq(newVar, arg))(newVar, b)
+      }
+    }
+
+    override def buildAbstractFun(b: StructureTree, argType: Tree): Tree = {
+      val stringName = s"u_${ctxList.size}"
+      val newVar: Tree = buildValDef(stringName, argType)
+      buildAbstract(newVar +: ctxList, arg)(newVar, b)
+    }
+
+    override def buildInlResult(a: StructureTree): Tree = q"shapeless.Inl(${build(a)})"
+
+    override def buildInrResult(a: StructureTree): Tree = q"shapeless.Inl(${build(a)})"
+  }
+
 
 }

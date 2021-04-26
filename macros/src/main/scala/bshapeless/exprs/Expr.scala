@@ -176,7 +176,7 @@ case class AbstractVal[Ctx <: HList, A <: HList, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: Builder[R]): R = b.buildAbstractVal(e, true)
+  def build[R](b: Builder[R]): R = b.buildAbstractVal(e, true, "")
 }
 
 case class AbstractValNotH[Ctx <: HList, A, Arg, Res](
@@ -188,7 +188,7 @@ case class AbstractValNotH[Ctx <: HList, A, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: Builder[R]): R = b.buildAbstractVal(e, false)
+  def build[R](b: Builder[R]): R = b.buildAbstractVal(e, false, "")
 }
 
 
@@ -201,7 +201,7 @@ case class AbstractFunc[Ctx <: HList, A, Arg, Res](
 
   override def size: Int = e.size + 1
 
-  def build[R](b: Builder[R]): R = b.buildAbstractFun(e)
+  def build[R](b: Builder[R]): R = b.buildAbstractFun(e, "")
 }
 
 case class WithMapCtx[Ctx <: HList, NCtx <: HList, Args,R](

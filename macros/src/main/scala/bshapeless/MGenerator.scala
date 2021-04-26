@@ -4,6 +4,7 @@ import bshapeless.exprs.ExprStringBuilder
 import bshapeless.exprs.{Expr => MExpr}
 import shapeless._
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.language.experimental.macros
 import scala.reflect.macros.blackbox
@@ -24,6 +25,8 @@ object MGenerator {
   def applyO[N <: Nat, C <: HList, A, T, O <: Options](implicit e: MGenerator[Nat._5, N, C, A, T, O]): MGenerator[Nat._5, N, C, A, T, O] = e
 
   def applyL[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options](implicit e: MGenerator[L, N, C, A, T, O]): MGenerator[L, N, C, A, T, O] = e
+
+  def raw[N <: Nat, C <: HList, A, T, O <: Options](ctx: C, args: A): T = macro MacroImpl.macroImplRaw[N, C, A, T, O]
 
   implicit def fromMacro[L <: Nat, N <: Nat, C <: HList, A, T, O <: Options]: MGenerator[L, N, C, A, T, O] = macro MacroImpl.macroImpl[L, N, C, A, T, O]
 
@@ -57,6 +60,117 @@ object MGenerator {
     def macroImplString[L <: Nat : c.WeakTypeTag, N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag]: c.Tree = {
       val strings = macroImplBaseStringU[L, N, C, A, T, O].map(Constant(_)).map(Literal(_))
       q"Seq(..$strings)"
+    }
+
+    def macroImplRaw[N <: Nat : c.WeakTypeTag, C <: HList : c.WeakTypeTag, A: c.WeakTypeTag, T: c.WeakTypeTag, O <: Options : c.WeakTypeTag](
+      ctx: c.Expr[C],
+      args: c.Expr[A]
+    ): c.Expr[T] = {
+      buildResult[c.Expr[T], Nat._1, N, C, A, T, O] { case (Seq(candidate), execCtx) =>
+        def splitHList(h: Tree): (Seq[Tree], Seq[Tree]) = {
+          h match {
+            case q"""{
+              $v
+              shapeless.this.HList.hlistOps[$_]($t).::[$_]($h)
+            }""" =>
+              log("hlistOps")
+              val (d, l) = splitHList(t)
+              (v +: d, h +: l)
+            case q"shapeless.this.HList.hlistOps[$_]($t).::[$_]($h)" =>
+              val (d, l) = splitHList(t)
+              (d, h +: l)
+            case q"""{
+              $v
+              shapeless.HNil.::[$_]($h)
+            }""" =>
+              (Seq(v), Seq(h))
+            case q"""shapeless.HNil.::[$_]($h)""" =>
+              (Seq(), Seq(h))
+            case q"${x}.asInstanceOf[$t]" => splitHList(x)
+            case q"$h :: $t" =>
+              val (d, l) = splitHList(t.asInstanceOf[Tree])
+              (d, h.asInstanceOf[Tree] +: l)
+            case q"shapeless.HNil" => (Seq(), Seq())
+          }
+        }
+
+        def splitArgs(a: Args, t: Tree): Any = {
+          a match {
+            case ListArgs(ts, _) => ??? //ts.zip(splitHList(t)).map((splitArgs _).tupled)
+            case _ => t
+          }
+        }
+
+        @tailrec
+        def unblock(t: Tree, prevs: Seq[Tree]): (Seq[Tree], Tree) = {
+          t match {
+            case Block(a, v) => unblock(v, prevs ++ a)
+            case q"shapeless.this.HList.hlistOps[$t]($e)" => unblock(e, prevs)
+            case q"${x}.asInstanceOf[$t]" => unblock(x, Nil)
+            case q"{ ..$a }" =>
+              if (a.size == 1) {
+                if (a.head.isInstanceOf[Block]) unblock(a.head, prevs)
+                else (prevs, a.head)
+              } else unblock(a.last, prevs ++ a.init)
+            case t => (Nil, t)
+          }
+        }
+
+        val (ctxVals, ctxVal) = unblock(ctx.tree, Nil)
+        val (argVals, argVal) = unblock(args.tree, Nil)
+        val argTree = splitArgs(execCtx.args, argVal)
+        val (innerCtxVals, ctxValInner) = splitHList(ctxVal)
+        val builder = ExprRawTreeBuilder(ctxValInner, argTree)
+        val tree = builder.build(candidate.structure)
+        val simplifiedTree = simplify(ctxVals ++ argVals ++ innerCtxVals, tree)
+        log(show(simplifiedTree))
+        c.Expr[T](simplifiedTree)
+      }
+    }
+
+    def simplify(vals: Seq[Tree], expr: Tree): Tree = {
+      val map = vals.map { case ValDef(_, name, _, v) => name -> v }.toMap
+
+      def replace(t: Tree): Tree = t match {
+        case q"$x._1" => replace(x) match {
+          case q"scala.Tuple2($a, $_)" => a
+          case x => q"$x._1"
+        }
+        case q"$x._2" => replace(x) match {
+          case q"scala.Tuple2($_, $a)" => a
+          case x => q"$x._2"
+        }
+        case Match(t, defs) => Match(replace(t), defs.map(replace).map(_.asInstanceOf[CaseDef]))
+        case CaseDef(t, g, b) => CaseDef(t, g, replace(b))
+        case Ident(n: TermName) if map.contains(n) => map(n)
+
+        case x: Ident => x
+        case Block(lt, t) => Block(lt.map(replace), replace(t))
+        case If(cond, ifT, ifF) => If(replace(cond), replace(ifT), replace(ifF))
+        case Apply(f, args) => //Simplicifation of application and application of lambdas
+          replace(f) match {
+            case Function(argDefs, body) =>
+              val simplArgs = args.map(replace)
+              val toSimplifyArgs = argDefs.zip(simplArgs).map { case (ValDef(m, n, t, _), v) => ValDef(m, n, t, v) }
+              if (argDefs.size == simplArgs.size) simplify(toSimplifyArgs, body)
+              else {
+                val simplifiedBody = simplify(toSimplifyArgs, body)
+                if (argDefs.size < simplArgs.size) Apply(simplifiedBody, simplArgs.drop(argDefs.size))
+                else Function(argDefs.drop(simplArgs.size), simplifiedBody)
+              }
+            case v => Apply(v, args.map(replace))
+          }
+
+        case Select(t, n) => Select(replace(t), n)
+        case Typed(t, _) => replace(t)
+        case Function(vds, body) => Function(vds, replace(body))
+        case TypeApply(t, args) => TypeApply(replace(t), args.map(replace))
+        case e =>
+          log(s"no change. " + showRaw(e))
+          e
+      }
+
+      replace(expr)
     }
   }
 

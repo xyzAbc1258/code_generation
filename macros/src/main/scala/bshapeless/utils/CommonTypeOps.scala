@@ -32,6 +32,12 @@ class CommonTypeOps[U <: Universe with Singleton](val pair: (U,U#Type, Types[U])
     c.toSet
   }
 
-  def firstTypeArg: U#Type = a2.typeArgs.head
+  def firstTypeArg: U#Type = try {
+    a2.typeArgs.head
+  } catch {
+    case _: java.util.NoSuchElementException =>
+      throw new IllegalArgumentException(s"$a2 is not generic type")
+  }
+
   def secondTypeArg: U#Type = a2.typeArgs.tail.head
 }

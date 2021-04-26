@@ -41,14 +41,14 @@ class ExprTreeBuilder[W[_]](eval: W[_] => Any) extends ExprBuilderGeneric[ExprTr
     exprs.PairExp[Nothing, Nothing, Nothing, Nothing](build(f), build(s))
   }
 
-  override def buildAbstractVal(b: ExprTree, isArgHList: Boolean): Expr[Nothing, Nothing, Nothing] = {
+  override def buildAbstractVal(b: ExprTree, isArgHList: Boolean, argType: W[String]): Expr[Nothing, Nothing, Nothing] = {
     if (isArgHList)
       exprs.AbstractVal[Nothing, Nothing, Nothing, Nothing](build(b).asInstanceOf)
     else
       exprs.AbstractValNotH[Nothing, Nothing, Nothing, Nothing](build(b).asInstanceOf)
   }
 
-  override def buildAbstractFun(b: ExprTree): Expr[Nothing, Nothing, Nothing] =
+  override def buildAbstractFun(b: ExprTree, argType: W[String]): Expr[Nothing, Nothing, Nothing] =
     exprs.AbstractFunc[Nothing, Nothing, Nothing, Nothing](build(b).asInstanceOf)
 
   override def buildInlResult(a: ExprTree): Expr[Nothing, Nothing, Nothing] =
