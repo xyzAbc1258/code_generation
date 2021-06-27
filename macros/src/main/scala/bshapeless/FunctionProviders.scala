@@ -71,19 +71,30 @@ trait FunctionProviders extends CommonUtils {
 
   object ObjectFunc {
 
-    def buildFuncFromMethod(objType: Type, m: MethodSymbol, idx: Int): Option[Func] = {
+    def buildFuncFromMethod(objType: Type, m: MethodSymbol, idx: Int): Seq[Func] = {
       //in case function is generic and we have specified type which arise from object type
       def inObjView(t: Type): Type = t.asSeenFrom(objType, objType.typeSymbol)
-      def buildT(args: List[List[Symbol]]): Func = args match {
-        case List(s) :: (tail@_ :: _) => ComplexFunc(inObjView(s.info), buildT(tail), idx, 0)
-        case List(s) :: Nil => SimpleFunc1(inObjView(s.info), inObjView(m.returnType), idx, 0)
+      def buildT(args: List[List[Symbol]]): Seq[Func] = args match {
+        case List(s) :: (tail@_ :: _) => Seq(ComplexFunc(inObjView(s.info), buildT(tail).ensuring(_.size == 1).head, idx, 0))
+        case List(s) :: Nil => Seq(SimpleFunc1(inObjView(s.info), inObjView(m.returnType), idx, 0))
       }
-      if(m.paramLists.nonEmpty) Some(buildT(m.paramLists))
-      else None
+      if(m.paramLists.nonEmpty) buildT(m.paramLists)
+      else {
+        m.returnType match {
+          case RefinedType(types, _) => //def refinedFunc: (A => B) with (C => D)
+            types.collect{case f@Func1Extractor(_, _) => f}
+              .zipWithIndex
+              .flatMap{case (f,i) => typeToFunc(inObjView(f), idx, i)}
+          case _ => Nil
+        }
+      }
     }
 
-    def apply(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int): ObjectFunc =
-      new ObjectFunc(wholeType, objType, method, buildFuncFromMethod(objType, method, idx), idx)
+    def apply(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int): Seq[ObjectFunc] = {
+      val built = buildFuncFromMethod(objType, method, idx)
+      if(built.nonEmpty) built.map { f => new ObjectFunc(wholeType, objType, method, Some(f), idx) }
+      else ObjectFunc(wholeType, objType, method, None, idx) :: Nil
+    }
   }
 
   def typeToFunc(t: Type, idx: Int, subIndex: Int = 0): Seq[Func] = {
@@ -132,6 +143,8 @@ trait FunctionProviders extends CommonUtils {
     private def compareSingle(s: Seq[Type], top: Seq[(Type, Type)], cm: Map[Type, Type]): Map[Type, Type] = {
       top match {
         case Seq() => cm
+        case (RefinedType(ptp, _), RefinedType(ep,_ )) +: t if ptp.length == ep.length =>
+          compareSingle(s, ptp.map(_.dealias).zip(ep.map(_.dealias)) ++: t, cm)
         case (pt, e) +: t =>
           val pta = pt.typeArgs
           val ea = e.typeArgs
@@ -147,12 +160,13 @@ trait FunctionProviders extends CommonUtils {
       }
     }
 
-    override def fittingFunction(expectedResult: Type, withSubtyping: Boolean): Option[Func] = {
+    override def fittingFunction(expectedResult: Type, withSubtyping: Boolean): Option[Func] = Timer.timer("generic provider time") {
+      Timer.tick("Generic fitting call")
       val candidateTypeArgs = compareSingle(polyFunc.typeArgs, Seq((polyFunc.retTypeTemplate.dealias, expectedResult.dealias)), Map.empty)
       if (candidateTypeArgs.size != polyFunc.typeArgs.size) return None
       val m = polyFunc.typeArgs.map(candidateTypeArgs)
       val gf = polyFunc.withTypeArgs(m)
-      Some(gf).filter(x => isSuitable(x.result, expectedResult, withSubtyping))
+      Option.when(isSuitable(gf.result, expectedResult, withSubtyping))(gf)
     }
 
     override def withIndex(n: Int): FuncProvider = copy(polyFunc = polyFunc.withIndex(n))
@@ -205,7 +219,11 @@ trait FunctionProviders extends CommonUtils {
       found match {
         case Some(value) => Selector(keyMap(value))
         case None if t.typeArgs.nonEmpty => Apply(t.typeConstructor, t.typeArgs.map(toTypeBuilder(s, _, keyMap)))
-        case None => ConstType(t)
+        case None =>
+          t match {
+            case RefinedType(t, _) => Refine(t.map(toTypeBuilder(s, _, keyMap)))
+            case t => ConstType(t)
+          }
       }
     }
 
@@ -235,6 +253,10 @@ trait FunctionProviders extends CommonUtils {
 
     protected case class Apply(tyCon: Type, builders: List[TypeBuilder]) extends TypeBuilder {
       override def build(m: Map[Int, Type]): Type = appliedType(tyCon, builders.map(_.build(m)))
+    }
+
+    protected case class Refine(builders: List[TypeBuilder]) extends TypeBuilder {
+      override def build(m: Map[Int, Type]): Type = internal.intersectionType(builders.map(_.build(m)))
     }
 
   }
@@ -267,7 +289,7 @@ trait FunctionProviders extends CommonUtils {
   case class ObjectPolyFunc(wholeType: Type, objType: Type, method: MethodSymbol, idx: Int, subIndex: Int) extends PolyFunc {
     private lazy val (genType, symbols): (Func, Seq[Type]) = {
       method.typeSignature match {
-        case PolyType(symbols, _) => (ObjectFunc.buildFuncFromMethod(objType, method, idx).get, symbols.map(_.asType.toType))
+        case PolyType(symbols, _) => (ObjectFunc.buildFuncFromMethod(objType, method, idx).head, symbols.map(_.asType.toType))
         case x => sys.error(s"Wrong signature $x")
       }
     }

@@ -28,12 +28,12 @@ case object CmpOp extends IntOp {
 }
 
 sealed trait Command
-sealed trait OpCommandAbs extends Command {
+sealed trait BinOp extends Command {
   def r1Ext: Int with RegOp1 with RegDst
   def r2Ext: Int with RegOp2
   def op: IntOp
 }
-sealed abstract class OpCommand(val op: IntOp) extends OpCommandAbs {
+sealed abstract class OpCommand(val op: IntOp) extends BinOp {
   val r1: Int
   val r2: Int
 
@@ -47,7 +47,7 @@ case class LoadConst(register: Int with RegDst, value: Int with Result) extends 
 
 case class Store(register: Int with RegSrc, memoryLocation: Int with MemDst) extends Command
 
-case class MoveReg(regSrc: Int with RegSrc, regDest: Int with RegDst) extends Command
+case class Move(regSrc: Int with RegSrc, regDest: Int with RegDst) extends Command
 
 case class Jmp(line: Int with LineNumber) extends Command
 
@@ -77,6 +77,10 @@ case object Eq extends CmpWhich {
 
 case class JmpIf(lineNumber: Int with LineNumber, reg: Int with RegSrc, which: CmpWhich) extends Command
 
+case object Finish extends Command {
+  def finish(x: ExecutorState): ExecutorState with Final = x.tag[Final]
+}
+
 object Command {
 
   def parse(line: String): Command = {
@@ -86,7 +90,7 @@ object Command {
       case s"ld $regDst $memSrc" => Load(memSrc, regDst) //load
       case s"ldc $regDst $const" => LoadConst(regDst, const) //load const
       case s"st $memDest $regSrc" => Store(regSrc, memDest) //store
-      case s"mv $regDst $regSrc" => MoveReg(regSrc, regDst) //move
+      case s"mv $regDst $regSrc" => Move(regSrc, regDst) //move
       case s"add $reg1 $reg2" => Add(reg1, reg2) //add
       case s"sub $reg1 $reg2" => Subtract(reg1, reg2) //sub
       case s"mul $reg1 $reg2" => Mul(reg1, reg2) //multiply

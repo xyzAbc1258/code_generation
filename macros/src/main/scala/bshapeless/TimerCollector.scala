@@ -9,7 +9,7 @@ class TimerCollector {
 
   private val timeUnit = "μs"
 
-  def timer[T](key: String)(f: => T): T = {
+  @inline def timer[T](key: String)(f: => T): T = {
     val s = System.nanoTime()
     val r = f
     val tL = System.nanoTime() - s

@@ -271,7 +271,7 @@ object MazeSolver {
       NoLoops with NoSubtyping
     ]
     res3.expressions
-      .map(_.stringify(""::HNil, "traverser"::(Range(1, 1000).foldRight[HList](HNil)(_.toString :: _)))(null, null))
+      .map(_.stringify(""::HNil, "traverser"::(Range(1, 1000).foldRight[HList](HNil){case (i, h) => ("field_" + i).toString :: h}))(null, null))
       .foreach(println(_))
   }
 }

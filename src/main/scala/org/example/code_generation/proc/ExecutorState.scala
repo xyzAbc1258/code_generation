@@ -5,7 +5,7 @@ import org.example.code_generation.proc.Semantics.Tag
 trait ExecutorApi {
   def memoryState: MemoryState
   def jumpTo(index: Int with LineNumber): ExecutorState with Result
-  def nextWithState(newState: MemoryState with Result): ExecutorState with Result
+  def nextLineWithState(newState: MemoryState with Result): ExecutorState with Result
 }
 
 case class ExecutorState(
@@ -13,7 +13,7 @@ case class ExecutorState(
   memoryState: MemoryState,
   currentInstrIndex: Int) extends ExecutorApi {
 
-  def currentInstruction: Command = initialInstructionSet(currentInstrIndex)
+  def currentInstruction: Command = if(finished) Finish else initialInstructionSet(currentInstrIndex)
 
   def jumpToI(index: Int): ExecutorState = copy(currentInstrIndex = index)
 
@@ -25,7 +25,7 @@ case class ExecutorState(
   override def jumpTo(index: Int with LineNumber): ExecutorState with Result =
     jumpToI(index.asInstanceOf[Int]).tag
 
-  override def nextWithState(newState: MemoryState with Result): ExecutorState with Result =
+  override def nextLineWithState(newState: MemoryState with Result): ExecutorState with Result =
     nextWithStateI(newState).tag
 }
 

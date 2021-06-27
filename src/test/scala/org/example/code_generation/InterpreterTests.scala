@@ -9,8 +9,6 @@ import org.scalatest.matchers.should.Matchers
 
 class InterpreterTests extends AnyFunSuite with Matchers {
 
-  println(Interpreter.stringExpression)
-
   def execute(commandsLines: String): MemoryState = {
     val commands = commandsLines.linesIterator.map(Command.parse).toArray
     val initialState = ExecutorState.empty(commands, 8)

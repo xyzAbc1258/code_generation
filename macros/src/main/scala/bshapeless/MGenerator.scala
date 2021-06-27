@@ -67,6 +67,17 @@ object MGenerator {
       args: c.Expr[A]
     ): c.Expr[T] = {
       buildResult[c.Expr[T], Nat._1, N, C, A, T, O] { case (Seq(candidate), execCtx) =>
+        def splitHListFirst(t: Tree, typ: Type): (Seq[Tree], Seq[Tree]) = {
+          t match {
+            case Ident(_) => (Nil, Types.split2ArgsRec(typ, Types.hconsType)
+              .foldLeft((t, List.empty[Tree])){
+                case ((t,l), _) => (q"${t}.tail", l :+ q"${t}.head")
+              }._2
+            )
+            case _ => splitHList(t)
+          }
+        }
+
         def splitHList(h: Tree): (Seq[Tree], Seq[Tree]) = {
           h match {
             case q"""{
@@ -119,7 +130,7 @@ object MGenerator {
         val (ctxVals, ctxVal) = unblock(ctx.tree, Nil)
         val (argVals, argVal) = unblock(args.tree, Nil)
         val argTree = splitArgs(execCtx.args, argVal)
-        val (innerCtxVals, ctxValInner) = splitHList(ctxVal)
+        val (innerCtxVals, ctxValInner) = splitHListFirst(ctxVal, weakTypeOf[C])
         val builder = ExprRawTreeBuilder(ctxValInner, argTree)
         val tree = builder.build(candidate.structure)
         val simplifiedTree = simplify(ctxVals ++ argVals ++ innerCtxVals, tree)
@@ -273,12 +284,12 @@ object MGenerator {
 
     object Utils {
 
-      @inline def concatLazy(opt1: => Set[Candidate], opt2: => Set[Candidate], opt3: => Set[Candidate])(implicit c: ExecCtx): Set[Candidate] = {
+      @inline def concatLazy(opt1: => Set[Candidate], opt2: => Set[Candidate], opt3: => Set[Candidate], opt4: => Set[Candidate])(implicit c: ExecCtx): Set[Candidate] = {
         val current1 = opt1
         if (current1.size >= c.limit) return current1.limit
         val current2 = current1 ++ opt2
         if (current2.size >= c.limit) return current2.limit
-        (current2 ++ opt3).limit
+        (current2 ++ opt3 ++ opt4).limit
       }
 
       @inline def concat(opts: Set[Candidate]*)(implicit c: ExecCtx): Set[Candidate] = opts.toSet.flatten.limit
@@ -355,7 +366,8 @@ object MGenerator {
       lazy val simpleCases = generateFromArgs
       lazy val fromFuncs = generateFromCtxFunctions //Can we generate result from functions from context
       lazy val pairs = generatePair
-      Utils.concatLazy(simpleCases, fromFuncs, pairs)
+      lazy val genCopro = generateSimpleComposite
+      Utils.concatLazy(simpleCases, fromFuncs, pairs, genCopro)
     }
 
     def generateFunc(implicit ctx: ExecCtx): Set[Candidate] = {
@@ -402,6 +414,12 @@ object MGenerator {
       Utils.concat(a1TreesInl, restTreesInr)
     }
 
+    def generateSimpleComposite(implicit ctx: ExecCtx): Set[Candidate] = {
+      if (ctx.result <:< Types.hlistType) generateCompositeHList
+      else if (ctx.result <:< Types.cconsType) generateCompositeCoproduct
+      else Set()
+    }
+
     def generateComposite(implicit ctx: ExecCtx): Set[Candidate] = {
       if (ctx.result <:< Types.hlistType) generateCompositeHList
       else if (ctx.result <:< Types.cconsType) generateCompositeCoproduct
@@ -411,10 +429,11 @@ object MGenerator {
     def generateFromCoproduct(implicit ctx: ExecCtx): Set[Candidate] = {
       ctx.args match {
         case CoproductArgs(t, _) => Cache.cached(Stage.FromCopro) {
-          val mapped = t.map(ctx.withArgs).map(generateComposite(_))
+          val mapped = t.map(ctx.withArgs).map(generateFunc(_))
           if (mapped.exists(_.isEmpty)) {
             val tt = t.zip(mapped).filter(_._2.isEmpty).map(_._1)
-            log(s"No implicit for $ctx Not defined for $tt")
+            log(s"No implicit for $ctx")
+            log(s"Not defined for $tt")
             Set.empty
           } else {
             val trees = mapped.zip(t.map(_.wholeType))
@@ -423,7 +442,7 @@ object MGenerator {
             }._1
           }
         }
-        case _ => generateComposite(ctx)
+        case _ => generateFunc(ctx)
       }
     }
 
@@ -446,7 +465,7 @@ object MGenerator {
         case value =>
           val smallestCandidates = value.toSeq.sortBy(_.size).take(ctx.limit)
           log(s"Candidates count: ${value.size}")
-
+          log(Timer.printable)
           f(smallestCandidates, ctx)
       }
     }

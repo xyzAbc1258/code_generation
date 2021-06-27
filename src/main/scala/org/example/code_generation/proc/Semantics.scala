@@ -16,6 +16,8 @@ trait Operand1 extends OpSemantics
 trait Operand2 extends OpSemantics
 trait Result extends OpSemantics
 
+trait Final extends Semantics
+
 trait MemSrc extends Semantics
 trait MemDst extends Semantics
 

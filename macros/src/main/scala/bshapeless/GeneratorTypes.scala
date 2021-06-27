@@ -350,9 +350,9 @@ trait GeneratorTypes extends FunctionProviders {
       case t if t <:< Types.objectProviderTpe =>
         val tpe = t.firstTypeArg
         val methods = userMethods(tpe)
-        methods.map(x =>
-          if (x.typeParams.nonEmpty) GenericFuncProvider(ObjectPolyFunc(t, tpe, x, idx, subIndex), None)
-          else SimpleFuncProvider(ObjectFunc(t, tpe, x, idx))
+        methods.flatMap(x =>
+          if (x.typeParams.nonEmpty) GenericFuncProvider(ObjectPolyFunc(t, tpe, x, idx, subIndex), None)::Nil
+          else ObjectFunc(t, tpe, x, idx).map(SimpleFuncProvider(_))
         )
       case t => typeToFunc(t, idx, subIndex).map(SimpleFuncProvider(_))
     }
@@ -628,8 +628,9 @@ trait GeneratorTypes extends FunctionProviders {
     override def buildApply(f: StructureTree, a: StructureTree): Tree =
       buildFuncApp(build(f), build(a))
 
-    override def buildApplyNative(name: String, func: Tree, memberFunc: Boolean, arg: StructureTree): Tree =
+    override def buildApplyNative(name: String, func: Tree, memberFunc: Boolean, arg: StructureTree): Tree = {
       buildFuncApp(func, build(arg))
+    }
 
     override def buildPair(f: StructureTree, s: StructureTree): Tree = q"(${build(f)}, ${build(s)})"
 
@@ -662,7 +663,7 @@ trait GeneratorTypes extends FunctionProviders {
 
     override def buildInlResult(a: StructureTree): Tree = q"shapeless.Inl(${build(a)})"
 
-    override def buildInrResult(a: StructureTree): Tree = q"shapeless.Inl(${build(a)})"
+    override def buildInrResult(a: StructureTree): Tree = q"shapeless.Inr(${build(a)})"
   }
 
 
