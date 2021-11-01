@@ -11,6 +11,8 @@ object Cached2 {
   implicit def materialize[I]: Cached2[I] = macro CachedMacros2.materializeCached[I]
 
   def implicitly[T](implicit cached: Cached2[T]): T = cached.value
+
+  implicit def toValue[T](cached: Cached2[T]): T = cached.value
 }
 
 object CachedMacros2
